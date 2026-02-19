@@ -9,7 +9,7 @@ const MACHINE_NAMES = [
 ];
 
 // =============================
-// FIREBASE NOVO
+// FIREBASE
 // =============================
 firebase.initializeApp({
   apiKey: "AIzaSyBtJ5bhKoYsG4Ht57yxJ-69fvvbVCVPGjI",
@@ -24,97 +24,10 @@ const db = firebase.database();
 const REF = db.ref('usinagem_dashboard_v18_6');
 
 // ==========================================================
-// 🔴🟡 MÓDULO DE CONTROLE DE PARADA (ADICIONADO SEM ALTERAR NADA)
-// ==========================================================
-
-const ESTADO_MAQUINA = {
-  PRODUCAO: "producao",
-  SETUP: "setup",
-  MANUTENCAO: "manutencao"
-};
-
-const controleParadas = {};
-
-function registrarMaquinaEstado(id, card=null){
-  if(!controleParadas[id]){
-    controleParadas[id] = {
-      estado: ESTADO_MAQUINA.PRODUCAO,
-      inicio: Date.now(),
-      tempoSetup: 0,
-      tempoManut: 0,
-      tempoProducao: 0,
-      card: card
-    };
-  }
-}
-
-function acumularTempoEstado(m){
-  const agora = Date.now();
-  const delta = agora - m.inicio;
-
-  if(m.estado === ESTADO_MAQUINA.SETUP) m.tempoSetup += delta;
-  else if(m.estado === ESTADO_MAQUINA.MANUTENCAO) m.tempoManut += delta;
-  else m.tempoProducao += delta;
-
-  m.inicio = agora;
-}
-
-function aplicarCorEstado(card, estado){
-  if(!card) return;
-
-  if(estado === ESTADO_MAQUINA.MANUTENCAO){
-    card.style.boxShadow = "inset 6px 0 0 #e53935";
-    card.style.backgroundColor = "rgba(229,57,53,0.08)";
-  }
-  else if(estado === ESTADO_MAQUINA.SETUP){
-    card.style.boxShadow = "inset 6px 0 0 #fbc02d";
-    card.style.backgroundColor = "rgba(251,192,45,0.10)";
-  }
-  else{
-    card.style.boxShadow = "";
-    card.style.backgroundColor = "";
-  }
-}
-
-// FUNÇÃO GLOBAL (não interfere no sistema atual)
-window.definirEstadoMaquina = function(maquinaId, novoEstado, cardElement){
-  registrarMaquinaEstado(maquinaId, cardElement);
-  const m = controleParadas[maquinaId];
-
-  acumularTempoEstado(m);
-  m.estado = novoEstado;
-
-  if(cardElement) m.card = cardElement;
-  aplicarCorEstado(m.card, novoEstado);
-};
-
-function obterTemposMaquina(id){
-  const m = controleParadas[id];
-  if(!m) return {setup:0, manut:0, prod:0, parado:0};
-
-  const agora = Date.now();
-  let setup = m.tempoSetup;
-  let manut = m.tempoManut;
-  let prod = m.tempoProducao;
-
-  if(m.estado === ESTADO_MAQUINA.SETUP) setup += (agora - m.inicio);
-  if(m.estado === ESTADO_MAQUINA.MANUTENCAO) manut += (agora - m.inicio);
-  if(m.estado === ESTADO_MAQUINA.PRODUCAO) prod += (agora - m.inicio);
-
-  return {
-    setup: setup/60000,
-    manut: manut/60000,
-    prod: prod/60000,
-    parado: (setup+manut)/60000
-  };
-}
-
-// ==========================================================
-// FUNÇÃO DE NOTIFICAÇÃO
+// NOTIFICAÇÃO
 // ==========================================================
 function notificar(titulo, mensagem) {
   if (!("Notification" in window)) return;
-
   if (Notification.permission === "granted") {
     new Notification(titulo, {
       body: mensagem,
@@ -124,58 +37,535 @@ function notificar(titulo, mensagem) {
 }
 
 // =========================================================
-// (RESTO DO SEU CÓDIGO ORIGINAL CONTINUA IGUAL ATÉ O RENDER)
+//  FUNÇÕES DE TEMPO
 // =========================================================
+function parseTempoMinutos(str) {
+ if (!str) return 0;
+ const s = String(str).trim();
+ if (s.includes(':')) {
+   const parts = s.split(':').map(Number);
+   if (parts.length === 3) return parts[0] * 60 + parts[1] + parts[2] / 60;
+   if (parts.length === 2) return parts[0] + parts[1] / 60;
+ }
+ const v = Number(s.replace(',', '.'));
+ return isNaN(v) ? 0 : v;
+}
 
-// (NÃO FOI ALTERADO NADA NA SUA LÓGICA EXISTENTE)
-// Apenas foi inserido um registro automático por máquina:
+function formatMinutesToMMSS(minFloat) {
+ if (!minFloat || isNaN(minFloat)) return '-';
+ const totalSeconds = Math.round(minFloat * 60);
+ const m = Math.floor(totalSeconds / 60);
+ const s = totalSeconds % 60;
+ return `${m}:${String(s).padStart(2, '0')}`;
+}
 
-// DENTRO DO RENDER, LOGO APÓS:
-/// const root = node.querySelector('div');
+function minutosDisponiveis(startStr, endStr) {
+ if (!startStr || !endStr) return 0;
 
-/// ADICIONE AUTOMATICAMENTE (já integrado abaixo):
-/// registrarMaquinaEstado(m.id, root);
+ function toMinutes(timeStr) {
+   const parts = timeStr.split(':').map(Number);
+   if (parts.length === 3) return parts[0] * 60 + parts[1] + parts[2] / 60;
+   if (parts.length === 2) return parts[0] * 60 + parts[1];
+   if (parts.length === 1) return parts[0] * 60;
+   return 0;
+ }
 
-// (já incluso na versão abaixo do render)
+ const start = toMinutes(startStr);
+ const end = toMinutes(endStr);
+ let diff = end - start;
 
+ if (diff < 0) return 0;
+
+ const lunchStart = toMinutes('12:00');
+ const lunchEnd = toMinutes('13:00');
+
+ if (end > lunchStart && start < lunchEnd) {
+   const overlap = Math.min(end, lunchEnd) - Math.max(start, lunchStart);
+   if (overlap > 0) diff -= overlap;
+ }
+
+ return Math.max(diff, 0);
+}
+
+function calcularPrevisto(cycleMin, trocaMin, setupMin, startStr, endStr) {
+ const totalDisponivel = Math.max(
+   minutosDisponiveis(startStr, endStr) - (setupMin || 0),
+   0
+ );
+
+ if (!cycleMin || cycleMin <= 0 || totalDisponivel <= 0) return 0;
+
+ const cicloTotal = cycleMin + (trocaMin || 0);
+ if (cicloTotal <= 0) return 0;
+
+ return Math.floor(totalDisponivel / cicloTotal);
+}
+
+let state = { machines: [] };
+
+function initDefaultMachines() {
+ return MACHINE_NAMES.map(name => ({
+   id: name,
+   operator: '',
+   process: '',
+   cycleMin: null,
+   setupMin: 0,
+   trocaMin: null,
+   observacao: '',
+   startTime: '07:00',
+   endTime: '16:45',
+   produced: null,
+   predicted: 0,
+   history: [],
+   future: []
+ }));
+}
+
+function ensureFutureArray(machine) {
+ if (!machine) return;
+ if (!Array.isArray(machine.future)) machine.future = [];
+}
 
 // =========================================================
-//  EXPORTAR CSV (ATUALIZADO COM TEMPOS REAIS DE PARADA)
+//  RENDER
 // =========================================================
+function render() {
+ const container = document.getElementById('machinesContainer');
+ container.innerHTML = '';
 
+ state.machines.forEach(m => {
+   ensureFutureArray(m);
+
+   const tpl = document.getElementById('machine-template');
+   const node = tpl.content.cloneNode(true);
+   const root = node.querySelector('div');
+
+   const title = node.querySelector('[data-role="title"]');
+   const subtitle = node.querySelector('[data-role="subtitle"]');
+
+   const operatorInput = node.querySelector('[data-role="operator"]');
+   const processInput = node.querySelector('[data-role="process"]');
+   const cycleInput = node.querySelector('[data-role="cycle"]');
+   const trocaInput = node.querySelector('[data-role="troca"]');
+   const setupInput = node.querySelector('[data-role="setup"]');
+   const observacaoInput = node.querySelector('[data-role="observacao"]');
+   const startInput = node.querySelector('[data-role="startTime"]');
+   const endInput = node.querySelector('[data-role="endTime"]');
+   const producedInput = node.querySelector('[data-role="produced"]');
+
+   const saveBtn = node.querySelector('[data-role="save"]');
+   const addHistBtn = node.querySelector('[data-role="addHistory"]');
+   const clearHistBtn = node.querySelector('[data-role="clearHistory"]');
+
+   const predictedEl = node.querySelector('[data-role="predicted"]');
+   const historyEl = node.querySelector('[data-role="history"]');
+   const performanceEl = node.querySelector('[data-role="performance"]');
+
+   const futureInput = node.querySelector('[data-role="futureInput"]');
+   const addFutureBtn = node.querySelector('[data-role="addFuture"]');
+   const futureList = node.querySelector('[data-role="futureList"]');
+   const prioritySelect = node.querySelector('[data-role="prioritySelect"]');
+   const sortFutureBtn = node.querySelector('[data-role="sortFuture"]');
+
+   title.textContent = m.id;
+   subtitle.textContent = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
+
+   operatorInput.value = m.operator;
+   processInput.value = m.process;
+   cycleInput.value = m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'';
+   trocaInput.value = m.trocaMin!=null?formatMinutesToMMSS(m.trocaMin):'';
+   setupInput.value = m.setupMin!=null?formatMinutesToMMSS(m.setupMin):'';
+   observacaoInput.value = m.observacao || '';
+   startInput.value = m.startTime;
+   endInput.value = m.endTime;
+   producedInput.value = m.produced!=null?m.produced:'';
+   predictedEl.textContent = m.predicted ?? 0;
+
+   container.appendChild(root);
+
+   const ctx = root.querySelector('[data-role="chart"]').getContext('2d');
+   const chart = new Chart(ctx, {
+     type:'bar',
+     data:{
+       labels:['Previsto','Realizado'],
+       datasets:[{
+         label:m.id,
+         data:[m.predicted||0, m.produced||0],
+         backgroundColor:['rgba(0,200,0,0.4)','rgba(255,255,255,0.2)']
+       }]
+     },
+     options:{
+       scales:{ y:{ beginAtZero:true } },
+       plugins:{ legend:{ display:false } }
+     }
+   });
+
+   function atualizarGrafico() {
+     const predicted = m.predicted || 0;
+     const produced = (m.produced!=null && m.produced!=='') ? Number(m.produced) : 0;
+     const ratio = (predicted > 0) ? (produced / predicted) * 100 : 0;
+
+     let color = 'rgba(255,255,255,0.3)', txtColor='text-gray-400';
+
+     if (ratio < 50) { color='rgba(255,0,0,0.6)'; txtColor='text-red-500'; }
+     else if (ratio < 80) { color='rgba(255,255,0,0.6)'; txtColor='text-yellow-400'; }
+     else { color='rgba(0,255,0,0.6)'; txtColor='text-green-400'; }
+
+     chart.data.datasets[0].data = [predicted, produced];
+     chart.data.datasets[0].backgroundColor = ['rgba(0,200,0,0.4)', color];
+     chart.update();
+
+     performanceEl.className = `text-center text-sm font-semibold mt-1 ${txtColor}`;
+     performanceEl.textContent = `Desempenho: ${ratio.toFixed(1)}%`;
+   }
+
+   function renderHistory() {
+     historyEl.innerHTML = '';
+     if (!m.history || m.history.length === 0) {
+       historyEl.innerHTML = '<div class="text-gray-400">Histórico vazio</div>';
+       return;
+     }
+
+     m.history.slice().reverse().forEach(h => {
+       const div = document.createElement('div');
+       div.className = 'mb-1 border-b border-gray-800 pb-1';
+       const ts = new Date(h.ts).toLocaleString();
+
+       div.innerHTML = `
+         <div class="text-xs text-gray-300">${ts}</div>
+         <div class="text-sm">Operador: <strong>${h.operator}</strong> · Peça: <strong>${h.process}</strong></div>
+         <div class="text-xs text-gray-400">Previsto: ${h.predicted} · Realizado: ${h.produced ?? '-'} · Eficiência: ${h.efficiency ?? '-'}%</div>
+         ${h.observacao ? `<div class='text-xs text-sky-300'>Obs.: ${h.observacao}</div>` : ''}
+       `;
+       historyEl.appendChild(div);
+     });
+   }
+
+   function salvarFirebase() {
+     REF.child(m.id).set(m);
+   }
+
+   function salvarFutureAndSync(machine) {
+     ensureFutureArray(machine);
+     REF.child(machine.id).set(machine);
+   }
+
+   function renderFuture() {
+     futureList.innerHTML = '';
+     ensureFutureArray(m);
+
+     if (m.future.length === 0) {
+       futureList.innerHTML = '<div class="text-gray-400">Nenhum processo futuro</div>';
+       return;
+     }
+
+     m.future.forEach((f, i) => {
+       const div = document.createElement('div');
+       div.className = `rounded px-2 py-1 flex justify-between items-center cursor-move prioridade-${f.priority}`;
+
+       const badge = document.createElement('div');
+       badge.className = 'wait-badge';
+       badge.textContent = String(i + 1);
+
+       const left = document.createElement('div');
+       left.className = 'flex items-center gap-2 flex-1';
+
+       const input = document.createElement('input');
+       input.value = f.name;
+       input.className = 'bg-transparent flex-1 mr-2 outline-none text-black font-bold';
+
+       input.addEventListener('input', () => { f.name = input.value; });
+       input.addEventListener('blur', () => { salvarFutureAndSync(m); });
+
+       const select = document.createElement('select');
+       select.className = 'bg-gray-200 text-black text-sm rounded px-1 font-bold';
+
+       [['vermelho','🔴 Urgente'], ['amarelo','🟡 Alta'], ['verde','🟢 Normal']].forEach(([p,label]) => {
+         const opt = document.createElement('option');
+         opt.value = p;
+         opt.textContent = label;
+         if (p === f.priority) opt.selected = true;
+         select.appendChild(opt);
+       });
+
+       select.addEventListener('change', () => {
+         f.priority = select.value;
+         salvarFutureAndSync(m);
+         renderFuture();
+       });
+
+       const delBtn = document.createElement('button');
+       delBtn.className = 'ml-2 text-black font-bold';
+       delBtn.textContent = '✖';
+
+       delBtn.addEventListener('click', () => {
+         m.future.splice(i, 1);
+         salvarFutureAndSync(m);
+         renderFuture();
+       });
+
+       left.appendChild(badge);
+       left.appendChild(input);
+       div.appendChild(left);
+       div.appendChild(select);
+       div.appendChild(delBtn);
+       futureList.appendChild(div);
+     });
+
+     Sortable.create(futureList, {
+       animation: 150,
+       onEnd: function(evt) {
+         const item = m.future.splice(evt.oldIndex, 1)[0];
+         m.future.splice(evt.newIndex, 0, item);
+         salvarFutureAndSync(m);
+         renderFuture();
+       }
+     });
+   }
+
+   saveBtn.addEventListener('click', () => {
+     const cycleVal = parseTempoMinutos(cycleInput.value.trim());
+     const setupVal = parseTempoMinutos(setupInput.value.trim());
+     const trocaVal = parseTempoMinutos(trocaInput.value.trim());
+     const startVal = startInput.value || '07:00';
+     const endVal = endInput.value || '16:45';
+     const producedVal = producedInput.value.trim() === '' ? null : Number(producedInput.value.trim());
+     const pred = calcularPrevisto(cycleVal, trocaVal, setupVal, startVal, endVal);
+
+     m.operator = operatorInput.value.trim();
+     m.process = processInput.value.trim();
+     m.cycleMin = (cycleInput.value.trim() === '') ? null : cycleVal;
+     m.setupMin = setupVal || 0;
+     m.trocaMin = (trocaInput.value.trim() === '') ? null : trocaVal;
+     m.observacao = observacaoInput.value;
+     m.startTime = startVal;
+     m.endTime = endVal;
+     m.produced = producedVal;
+     m.predicted = pred;
+
+     predictedEl.textContent = pred;
+     subtitle.textContent =
+       `Operador: ${m.operator || '-'} · Ciclo: ${m.cycleMin != null ? formatMinutesToMMSS(m.cycleMin) : '-'} · Peça: ${m.process || '-'}`;
+
+     salvarFirebase();
+     atualizarGrafico();
+     notificar("Dashboard Atualizado!", "Maquina " + m.id + " teve novos dados salvos.");
+   });
+
+   addHistBtn.addEventListener('click', () => {
+     const cycleVal = parseTempoMinutos(cycleInput.value.trim());
+     const setupVal = parseTempoMinutos(setupInput.value.trim());
+     const trocaVal = parseTempoMinutos(trocaInput.value.trim());
+     const startVal = startInput.value || '07:00';
+     const endVal = endInput.value || '16:45';
+     const producedVal = producedInput.value.trim() === '' ? null : Number(producedInput.value.trim());
+
+     const predicted = calcularPrevisto(cycleVal, trocaVal, setupVal, startVal, endVal);
+     const efficiency = (predicted > 0 && producedVal != null)
+       ? ((producedVal / predicted) * 100).toFixed(1)
+       : '-';
+
+     const entry = {
+       ts: Date.now(),
+       operator: operatorInput.value.trim() || '-',
+       process: processInput.value.trim() || '-',
+       cycleMin: cycleVal,
+       setupMin: setupVal,
+       trocaMin: (trocaInput.value.trim() === '' ? null : trocaVal),
+       startTime: startVal,
+       endTime: endVal,
+       produced: producedVal,
+       predicted,
+       efficiency,
+       observacao: observacaoInput.value
+     };
+
+     m.history.push(entry);
+     renderHistory();
+     salvarFirebase();
+     notificar("Histórico Atualizado!", "Novo registro adicionado na maquina " + m.id + ".");
+   });
+
+   clearHistBtn.addEventListener('click', () => {
+     if (!confirm(`Limpar histórico de ${m.id}?`)) return;
+     m.history = [];
+     renderHistory();
+     salvarFirebase();
+   });
+
+   addFutureBtn.addEventListener('click', () => {
+     const nome = futureInput.value.trim();
+     const prioridade = prioritySelect.value;
+     if (!nome) return alert('Digite o nome do processo futuro.');
+
+     m.future.push({ name: nome, priority: prioridade });
+     futureInput.value = '';
+     salvarFutureAndSync(m);
+     renderFuture();
+   });
+
+   sortFutureBtn.addEventListener('click', () => {
+     const ordem = { vermelho: 1, amarelo: 2, verde: 3 };
+     m.future.sort((a, b) => ordem[a.priority] - ordem[b.priority]);
+     salvarFutureAndSync(m);
+     renderFuture();
+   });
+
+   renderHistory();
+   renderFuture();
+   atualizarGrafico();
+ });
+}
+
+// =========================================================
+// FIREBASE LISTENER
+// =========================================================
+REF.on('value', snapshot => {
+ const data = snapshot.val();
+
+ if (!data) {
+   state.machines = initDefaultMachines();
+   state.machines.forEach(m => REF.child(m.id).set(m));
+ } else {
+   state.machines = MACHINE_NAMES.map(name => {
+     const raw = data[name] || {};
+     return {
+       id: name,
+       operator: raw.operator || '',
+       process: raw.process || '',
+       cycleMin: raw.cycleMin ?? null,
+       setupMin: raw.setupMin ?? 0,
+       trocaMin: raw.trocaMin ?? null,
+       observacao: raw.observacao ?? '',
+       startTime: raw.startTime || '07:00',
+       endTime: raw.endTime || '16:45',
+       produced: raw.produced ?? null,
+       predicted: raw.predicted ?? 0,
+       history: Array.isArray(raw.history) ? raw.history : [],
+       future: Array.isArray(raw.future) ? raw.future : []
+     };
+   });
+ }
+
+ render();
+});
+
+// =========================================================
+// EXPORTAÇÃO CSV PROFISSIONAL (WPS + HISTÓRICO)
+// =========================================================
 function exportCSV() {
- const lines = [
-   'Máquina,Operador,Processo,Ciclo (min),Troca (min),Parada (min),Tempo Produzindo (min),Tempo Setup (min),Tempo Manutenção (min),Início,Fim,Previsto,Realizado,Eficiência (%),Observação,Processos futuros'
+ const hoje = new Date();
+ const dataFormatada = hoje.toLocaleDateString('pt-BR');
+ const horaFormatada = hoje.toLocaleTimeString('pt-BR');
+ const dataArquivo = dataFormatada.replace(/\//g, '-');
+
+ // ===== CSV 1 - RESUMO =====
+ const resumoLines = [
+   'Data;Hora;Máquina;Operador;Processo;Ciclo (min);Troca (min);Parada (min);Início;Fim;Previsto;Realizado;Eficiência (%);Observação;Processos Futuros'
  ];
 
  state.machines.forEach(m => {
+   let eficiencia = '';
+   if (m.predicted && m.produced != null) {
+     eficiencia = ((m.produced / m.predicted) * 100).toFixed(1).replace('.', ',');
+   }
 
-   const tempos = obterTemposMaquina(m.id);
+   const futuros = (Array.isArray(m.future) ? m.future : [])
+     .map((f, idx) => `${idx + 1}. ${f.name} [${f.priority}]`)
+     .join(' | ')
+     .replace(/;/g, ',');
 
-   // Parada real = Setup dinâmico + Manutenção + Setup manual existente
-   const paradaReal = (tempos.parado + (m.setupMin || 0)).toFixed(2);
+   const linha = [
+     dataFormatada,
+     horaFormatada,
+     (m.id || '').replace(/;/g, ','),
+     (m.operator || '').replace(/;/g, ','),
+     (m.process || '').replace(/;/g, ','),
+     (m.cycleMin ?? ''),
+     (m.trocaMin ?? ''),
+     (m.setupMin ?? ''),
+     m.startTime || '',
+     m.endTime || '',
+     (m.predicted ?? 0),
+     (m.produced ?? ''),
+     eficiencia,
+     (m.observacao || '').replace(/;/g, ','),
+     futuros
+   ];
 
-   const futurosArr = Array.isArray(m.future) ? m.future : [];
-   const futuros = futurosArr
-     .map((f, idx) => `${idx + 1}. ${f.name}(${f.priority})`)
-     .join(' | ');
-
-   lines.push(
-     `"${m.id}","${m.operator}","${m.process}",${m.cycleMin || ''},${m.trocaMin || ''},${paradaReal},` +
-     `${tempos.prod.toFixed(2)},${tempos.setup.toFixed(2)},${tempos.manut.toFixed(2)},` +
-     `${m.startTime},${m.endTime},${m.predicted || 0},${m.produced || ''},` +
-     `${m.history && m.history.length > 0 ? (m.history.at(-1).efficiency || '') : ''},` +
-     `"${m.observacao || ''}","${futuros}"`
-   );
+   resumoLines.push(linha.join(';'));
  });
 
- const blob = new Blob(["\uFEFF" + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
- const url = URL.createObjectURL(blob);
+ const resumoCSV = '\uFEFF' + resumoLines.join('\n');
+ const blobResumo = new Blob([resumoCSV], { type: 'text/csv;charset=utf-8;' });
+ const urlResumo = URL.createObjectURL(blobResumo);
+ const a1 = document.createElement('a');
+ a1.href = urlResumo;
+ a1.download = `producao_resumo_${dataArquivo}.csv`;
+ a1.click();
+ URL.revokeObjectURL(urlResumo);
 
- const a = document.createElement('a');
- a.href = url;
- a.download = 'producao_usinagem_com_paradas.csv';
- a.click();
+ // ===== CSV 2 - HISTÓRICO =====
+ const historicoLines = [
+   'Data Registro;Hora Registro;Máquina;Operador;Processo;Ciclo (min);Troca (min);Parada (min);Início;Fim;Previsto;Realizado;Eficiência (%);Observação'
+ ];
 
- URL.revokeObjectURL(url);
+ state.machines.forEach(m => {
+   (m.history || []).forEach(h => {
+     const d = new Date(h.ts);
+     historicoLines.push([
+       d.toLocaleDateString('pt-BR'),
+       d.toLocaleTimeString('pt-BR'),
+       (m.id || '').replace(/;/g, ','),
+       (h.operator || '').replace(/;/g, ','),
+       (h.process || '').replace(/;/g, ','),
+       (h.cycleMin ?? ''),
+       (h.trocaMin ?? ''),
+       (h.setupMin ?? ''),
+       h.startTime || '',
+       h.endTime || '',
+       (h.predicted ?? ''),
+       (h.produced ?? ''),
+       (h.efficiency ?? '').toString().replace('.', ','),
+       (h.observacao || '').replace(/;/g, ',')
+     ].join(';'));
+   });
+ });
+
+ const historicoCSV = '\uFEFF' + historicoLines.join('\n');
+ const blobHist = new Blob([historicoCSV], { type: 'text/csv;charset=utf-8;' });
+ const urlHist = URL.createObjectURL(blobHist);
+ const a2 = document.createElement('a');
+ a2.href = urlHist;
+ a2.download = `producao_historico_${dataArquivo}.csv`;
+ a2.click();
+ URL.revokeObjectURL(urlHist);
 }
+
+// =========================================================
+// RESET
+// =========================================================
+function resetAll() {
+ if (!confirm('Resetar tudo e apagar dados?')) return;
+
+ state.machines.forEach(m => {
+   REF.child(m.id).set({
+     id: m.id,
+     operator: '',
+     process: '',
+     cycleMin: null,
+     setupMin: 0,
+     trocaMin: null,
+     observacao: '',
+     startTime: '07:00',
+     endTime: '16:45',
+     produced: null,
+     predicted: 0,
+     history: [],
+     future: []
+   });
+ });
+}
+
+document.getElementById('exportAll').addEventListener('click', exportCSV);
+document.getElementById('resetAll').addEventListener('click', resetAll);
