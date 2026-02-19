@@ -1,0 +1,45 @@
+canvas {
+  width: 100% !important;
+  height: 120px !important;
+}
+
+.prioridade-vermelho {
+  background-color: #b91c1c !important;
+  color: #d42c2c !important;
+  font-weight: 700;
+}
+
+.prioridade-amarelo {
+  background-color: #eab308 !important;
+  color: #000 !important;
+  font-weight: 700;
+}
+
+.prioridade-verde {
+  background-color: #16a34a !important;
+  color: #000 !important;
+  font-weight: 700;
+}
+
+.wait-badge {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  border: 2px solid rgba(0,0,0,0.8);
+  margin-right: 8px;
+}
+
+input:focus, select:focus, [contenteditable]:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(56,189,248,0.2);
+}
+
+button.sort-btn {
+  padding: 6px 8px;
+  font-size: 0.85rem;
+}
