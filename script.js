@@ -172,6 +172,7 @@ function ensureStatusFields(machine) {
   if (!machine.statusAccSec.setup)      machine.statusAccSec.setup      = 0;
   if (!machine.statusAccSec.manutencao) machine.statusAccSec.manutencao = 0;
   if (machine.statusPaused === undefined) machine.statusPaused = false;
+  // statusChangedAt é gerenciado pelo Firebase listener — não modificar localmente
 }
 
 // =========================================================
@@ -398,9 +399,18 @@ function render() {
      m.status          = novoStatus;
      m.statusChangedAt = agora;
 
+     // Recalcula previsto com os novos tempos acumulados — mantém o valor justo
+     const liveAccSec = {
+       setup:      m.statusAccSec.setup      || 0,
+       manutencao: m.statusAccSec.manutencao || 0
+     };
+     const novoPrevisto = calcularPrevisto(m.cycleMin, m.trocaMin, null, m.startTime, m.endTime, liveAccSec);
+     m.predicted = novoPrevisto;
+     predictedEl.textContent = novoPrevisto;
+     atualizarGrafico();
+
      applyStatusVisual(root, novoStatus);
      salvarFirebase();
-     notificar('Status Alterado', `${m.id} agora está em: ${STATUS_CONFIG[novoStatus].label}`);
    }
 
    btnProducao.addEventListener('click',   () => mudarStatus('producao'));
@@ -434,6 +444,12 @@ function render() {
        m.statusPaused = false;
      }
      atualizarBtnPausar();
+
+     // Recalcula previsto com tempos atualizados
+     const _acc = { setup: m.statusAccSec.setup || 0, manutencao: m.statusAccSec.manutencao || 0 };
+     m.predicted = calcularPrevisto(m.cycleMin, m.trocaMin, null, m.startTime, m.endTime, _acc);
+     predictedEl.textContent = m.predicted;
+     atualizarGrafico();
      salvarFirebase();
    });
 
@@ -445,6 +461,10 @@ function render() {
      m.statusChangedAt = m.statusPaused ? null : Date.now();
      m.statusPaused  = false;
      atualizarBtnPausar();
+     // Ao zerar, previsto volta ao máximo (sem descontos de parada)
+     m.predicted = calcularPrevisto(m.cycleMin, m.trocaMin, null, m.startTime, m.endTime, { setup: 0, manutencao: 0 });
+     predictedEl.textContent = m.predicted;
+     atualizarGrafico();
      salvarFirebase();
    });
 
@@ -583,7 +603,6 @@ function render() {
 
      salvarFirebase();
      atualizarGrafico();
-     notificar('Dashboard Atualizado!', 'Maquina ' + m.id + ' teve novos dados salvos.');
    });
 
    // ---- Adicionar ao histórico ----
@@ -629,7 +648,6 @@ function render() {
      m.history.push(entry);
      renderHistory();
      salvarFirebase();
-     notificar('Histórico Atualizado!', 'Novo registro adicionado na maquina ' + m.id + '.');
    });
 
    // ---- Limpar histórico ----
@@ -671,41 +689,96 @@ function render() {
 // =========================================================
 // FIREBASE LISTENER
 // =========================================================
+
+// Guarda snapshot anterior para detectar o que mudou
+let prevSnapshot = {};
+// Flag: ignora o primeiro disparo (carga inicial) para não notificar todo mundo ao abrir
+let primeiraCarrega = true;
+
 REF.on('value', snapshot => {
  const data = snapshot.val();
 
  if (!data) {
    state.machines = initDefaultMachines();
    state.machines.forEach(m => REF.child(m.id).set(m));
- } else {
-   state.machines = MACHINE_NAMES.map(name => {
-     const raw = data[name] || {};
-     return {
-       id:        name,
-       operator:  raw.operator  || '',
-       process:   raw.process   || '',
-       cycleMin:  raw.cycleMin  ?? null,
-       setupMin:  raw.setupMin  ?? 0,
-       trocaMin:  raw.trocaMin  ?? null,
-       observacao:raw.observacao?? '',
-       startTime: raw.startTime || '07:00',
-       endTime:   raw.endTime   || '16:45',
-       produced:  raw.produced  ?? null,
-       predicted: raw.predicted ?? 0,
-       history:   Array.isArray(raw.history) ? raw.history : [],
-       future:    Array.isArray(raw.future)  ? raw.future  : [],
-       // Status
-       status:          raw.status          || 'producao',
-       statusChangedAt: raw.statusChangedAt || null,
-       statusPaused: raw.statusPaused || false,
-       statusAccSec: {
-         producao:   raw.statusAccSec?.producao   || 0,
-         setup:      raw.statusAccSec?.setup      || 0,
-         manutencao: raw.statusAccSec?.manutencao || 0
-       }
-     };
+   primeiraCarrega = false;
+   render();
+   return;
+ }
+
+ // Detecta mudanças vindas de OUTROS dispositivos e notifica localmente
+ if (!primeiraCarrega) {
+   MACHINE_NAMES.forEach(name => {
+     const raw  = data[name] || {};
+     const prev = prevSnapshot[name] || {};
+
+     // Mudou operador ou processo → alguém configurou a máquina
+     if ((raw.operator !== prev.operator || raw.process !== prev.process)
+         && (raw.operator || raw.process)) {
+       notificar(
+         `⚙️ ${name} atualizada`,
+         `Operador: ${raw.operator || '-'} · Peça: ${raw.process || '-'}`
+       );
+     }
+
+     // Novo registro no histórico
+     const prevHistLen = Array.isArray(prev.history) ? prev.history.length : 0;
+     const currHistLen = Array.isArray(raw.history)  ? raw.history.length  : 0;
+     if (currHistLen > prevHistLen) {
+       const ultimo = raw.history[raw.history.length - 1];
+       notificar(
+         `📋 Histórico — ${name}`,
+         `Realizado: ${ultimo.produced ?? '-'} · Eficiência: ${ultimo.efficiency ?? '-'}%`
+       );
+     }
+
+     // Mudança de status
+     if (raw.status && raw.status !== prev.status) {
+       const labels = { producao: '🟢 Produção', setup: '🟡 Setup', manutencao: '🔴 Manutenção' };
+       notificar(`${name}`, `Status: ${labels[raw.status] || raw.status}`);
+     }
    });
  }
+
+ // Atualiza snapshot anterior
+ prevSnapshot = JSON.parse(JSON.stringify(data));
+ primeiraCarrega = false;
+
+ state.machines = MACHINE_NAMES.map(name => {
+   const raw = data[name] || {};
+   // Se ainda não tem statusChangedAt e não está pausado, define agora e persiste
+   // para que TODOS os dispositivos usem o mesmo timestamp de referência
+   let statusChangedAt = raw.statusChangedAt || null;
+   if (!statusChangedAt && !raw.statusPaused) {
+     statusChangedAt = Date.now();
+     REF.child(name).child('statusChangedAt').set(statusChangedAt);
+   }
+
+   return {
+     id:        name,
+     operator:  raw.operator  || '',
+     process:   raw.process   || '',
+     cycleMin:  raw.cycleMin  ?? null,
+     setupMin:  raw.setupMin  ?? 0,
+     trocaMin:  raw.trocaMin  ?? null,
+     observacao:raw.observacao?? '',
+     startTime: raw.startTime || '07:00',
+     endTime:   raw.endTime   || '16:45',
+     produced:  raw.produced  ?? null,
+     predicted: raw.predicted ?? 0,
+     history:   Array.isArray(raw.history) ? raw.history : [],
+     future:    Array.isArray(raw.future)  ? raw.future  : [],
+     // Status
+     status:          raw.status   || 'producao',
+     statusChangedAt: statusChangedAt,
+     statusPaused:    raw.statusPaused || false,
+     statusAccSec: {
+       producao:   raw.statusAccSec?.producao   || 0,
+       setup:      raw.statusAccSec?.setup      || 0,
+       manutencao: raw.statusAccSec?.manutencao || 0
+     }
+   };
+ });
 
  render();
 });
