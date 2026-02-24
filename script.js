@@ -283,41 +283,44 @@ function render() {
    const node = tpl.content.cloneNode(true);
    const root = node.querySelector('div');
 
+   // Adiciona ao DOM imediatamente para que querySelector funcione corretamente
+   container.appendChild(root);
+
    // ---- Referências DOM ----
-   const title          = node.querySelector('[data-role="title"]');
-   const subtitle       = node.querySelector('[data-role="subtitle"]');
-   const operatorInput  = node.querySelector('[data-role="operator"]');
-   const processInput   = node.querySelector('[data-role="process"]');
-   const cycleInput     = node.querySelector('[data-role="cycle"]');
-   const trocaInput     = node.querySelector('[data-role="troca"]');
-   const paradaAutoDisplay = node.querySelector('[data-role="paradaAutoDisplay"]');
-   const observacaoInput= node.querySelector('[data-role="observacao"]');
-   const startInput     = node.querySelector('[data-role="startTime"]');
-   const endInput       = node.querySelector('[data-role="endTime"]');
-   const producedInput  = node.querySelector('[data-role="produced"]');
-   const saveBtn        = node.querySelector('[data-role="save"]');
-   const addHistBtn     = node.querySelector('[data-role="addHistory"]');
-   const clearHistBtn   = node.querySelector('[data-role="clearHistory"]');
-   const predictedEl    = node.querySelector('[data-role="predicted"]');
-   const historyEl      = node.querySelector('[data-role="history"]');
-   const performanceEl  = node.querySelector('[data-role="performance"]');
-   const futureInput    = node.querySelector('[data-role="futureInput"]');
-   const addFutureBtn   = node.querySelector('[data-role="addFuture"]');
-   const futureList     = node.querySelector('[data-role="futureList"]');
-   const prioritySelect = node.querySelector('[data-role="prioritySelect"]');
-   const sortFutureBtn  = node.querySelector('[data-role="sortFuture"]');
+   const title          = root.querySelector('[data-role="title"]');
+   const subtitle       = root.querySelector('[data-role="subtitle"]');
+   const operatorInput  = root.querySelector('[data-role="operator"]');
+   const processInput   = root.querySelector('[data-role="process"]');
+   const cycleInput     = root.querySelector('[data-role="cycle"]');
+   const trocaInput     = root.querySelector('[data-role="troca"]');
+   const paradaAutoDisplay = root.querySelector('[data-role="paradaAutoDisplay"]');
+   const observacaoInput= root.querySelector('[data-role="observacao"]');
+   const startInput     = root.querySelector('[data-role="startTime"]');
+   const endInput       = root.querySelector('[data-role="endTime"]');
+   const producedInput  = root.querySelector('[data-role="produced"]');
+   const saveBtn        = root.querySelector('[data-role="save"]');
+   const addHistBtn     = root.querySelector('[data-role="addHistory"]');
+   const clearHistBtn   = root.querySelector('[data-role="clearHistory"]');
+   const predictedEl    = root.querySelector('[data-role="predicted"]');
+   const historyEl      = root.querySelector('[data-role="history"]');
+   const performanceEl  = root.querySelector('[data-role="performance"]');
+   const futureInput    = root.querySelector('[data-role="futureInput"]');
+   const addFutureBtn   = root.querySelector('[data-role="addFuture"]');
+   const futureList     = root.querySelector('[data-role="futureList"]');
+   const prioritySelect = root.querySelector('[data-role="prioritySelect"]');
+   const sortFutureBtn  = root.querySelector('[data-role="sortFuture"]');
 
    // Botões de status
-   const btnProducao   = node.querySelector('[data-role="btnProducao"]');
-   const btnSetup      = node.querySelector('[data-role="btnSetup"]');
-   const btnManutencao = node.querySelector('[data-role="btnManutencao"]');
-   const btnPausar     = node.querySelector('[data-role="btnPausar"]');
-   const btnZerar      = node.querySelector('[data-role="btnZerar"]');
+   const btnProducao   = root.querySelector('[data-role="btnProducao"]');
+   const btnSetup      = root.querySelector('[data-role="btnSetup"]');
+   const btnManutencao = root.querySelector('[data-role="btnManutencao"]');
+   const btnPausar     = root.querySelector('[data-role="btnPausar"]');
+   const btnZerar      = root.querySelector('[data-role="btnZerar"]');
 
-   // Chips de tempo
-   const timeProducaoEl   = node.querySelector('[data-role="timeProducao"]');
-   const timeSetupEl      = node.querySelector('[data-role="timeSetup"]');
-   const timeManutencaoEl = node.querySelector('[data-role="timeManutencao"]');
+   // Chips de tempo (spans dentro dos botões de status)
+   const timeProducaoEl   = root.querySelector('[data-role="timeProducao"]');
+   const timeSetupEl      = root.querySelector('[data-role="timeSetup"]');
+   const timeManutencaoEl = root.querySelector('[data-role="timeManutencao"]');
 
    // ---- Preencher dados ----
    title.textContent = m.id;
@@ -337,9 +340,6 @@ function render() {
    timeProducaoEl.textContent   = formatSeconds(getLiveSeconds(m, 'producao'));
    timeSetupEl.textContent      = formatSeconds(getLiveSeconds(m, 'setup'));
    timeManutencaoEl.textContent = formatSeconds(getLiveSeconds(m, 'manutencao'));
-
-   // Adiciona ao DOM antes de iniciar o timer
-   container.appendChild(root);
 
    // Visual de status
    applyStatusVisual(root, m.status);
