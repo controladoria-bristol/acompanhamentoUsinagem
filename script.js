@@ -662,6 +662,10 @@ function render() {
    renderFuture();
    atualizarGrafico();
  });
+
+  // Reaplica o filtro de pesquisa após re-renderizar
+  const searchInput = document.getElementById('searchInput');
+  if (searchInput && searchInput.value) filtrarCards(searchInput.value);
 }
 
 // =========================================================
@@ -802,3 +806,42 @@ function resetAll() {
 
 document.getElementById('exportAll').addEventListener('click', exportCSV);
 document.getElementById('resetAll').addEventListener('click', resetAll);
+
+// =========================================================
+// PESQUISA EM TEMPO REAL
+// =========================================================
+function filtrarCards(termo) {
+  const q = termo.trim().toLowerCase();
+  const cards = document.querySelectorAll('#machinesContainer > div');
+  let visiveis = 0;
+
+  cards.forEach((card, i) => {
+    const m = state.machines[i];
+    if (!m) return;
+
+    const campos = [
+      m.id,
+      m.operator,
+      m.process,
+      // futuros também entram na busca
+      ...(Array.isArray(m.future) ? m.future.map(f => f.name) : [])
+    ].join(' ').toLowerCase();
+
+    const visivel = !q || campos.includes(q);
+    card.style.display = visivel ? '' : 'none';
+    if (visivel) visiveis++;
+  });
+
+  // Contador de resultados
+  const countEl = document.getElementById('searchCount');
+  if (q) {
+    countEl.textContent = `${visiveis} resultado${visiveis !== 1 ? 's' : ''}`;
+    countEl.classList.remove('hidden');
+  } else {
+    countEl.classList.add('hidden');
+  }
+}
+
+document.getElementById('searchInput').addEventListener('input', e => {
+  filtrarCards(e.target.value);
+});
