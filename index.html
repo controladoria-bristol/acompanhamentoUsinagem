@@ -69,18 +69,15 @@
       </div>
     </div>
 
-    <!-- Botões de status -->
-    <div class="flex gap-2 mb-1">
-      <button data-role="btnProducao"   class="btn-status btn-status-producao   active">🟢 Produção</button>
-      <button data-role="btnSetup"      class="btn-status btn-status-setup">🟡 Setup</button>
-      <button data-role="btnManutencao" class="btn-status btn-status-manutencao">🔴 Manutenção</button>
-    </div>
-
-    <!-- Chips de tempo acumulado por status -->
-    <div class="status-times mb-3">
-      <span class="status-time-chip chip-producao">🟢 Prod: <span data-role="timeProducao">0:00</span></span>
-      <span class="status-time-chip chip-setup">🟡 Setup: <span data-role="timeSetup">0:00</span></span>
-      <span class="status-time-chip chip-manutencao">🔴 Manut: <span data-role="timeManutencao">0:00</span></span>
+    <!-- Chips clicáveis de status + controles -->
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <button data-role="btnProducao"   class="status-time-chip chip-producao   cursor-pointer select-none active-chip">🟢 Prod: <span data-role="timeProducao">0:00</span></button>
+      <button data-role="btnSetup"      class="status-time-chip chip-setup      cursor-pointer select-none">🟡 Setup: <span data-role="timeSetup">0:00</span></button>
+      <button data-role="btnManutencao" class="status-time-chip chip-manutencao cursor-pointer select-none">🔴 Manut: <span data-role="timeManutencao">0:00</span></button>
+      <button data-role="btnPausar" title="Pausar cronômetro"
+        class="px-2 py-1 rounded text-xs font-bold bg-gray-600 hover:bg-gray-500 text-white border border-gray-500 ml-auto">⏸ Pausar</button>
+      <button data-role="btnZerar" title="Zerar todos os tempos (troca de peça)"
+        class="px-2 py-1 rounded text-xs font-bold bg-orange-700 hover:bg-orange-600 text-white border border-orange-500">↺ Zerar</button>
     </div>
 
     <!-- Campos de dados -->
