@@ -83,7 +83,7 @@ input:focus, select:focus, [contenteditable]:focus {
   gap: 4px;
   padding: 5px 10px;
   border-radius: 9999px;
-  font-weight: 600;
+  font-weight: 800;
   font-size: 0.75rem;
   border: 2px solid transparent;
   cursor: pointer;
@@ -123,11 +123,11 @@ input:focus, select:focus, [contenteditable]:focus {
    ============================== */
 .field-label {
   display: block;
-  font-size: 0.65rem;
-  font-weight: 600;
+  font-size: 0.7rem;
+  font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #9ca3af;
+  color: #d1d5db;
   margin-bottom: 3px;
 }
 .field-input {
