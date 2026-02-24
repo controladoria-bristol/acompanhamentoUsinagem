@@ -43,3 +43,66 @@ button.sort-btn {
   padding: 6px 8px;
   font-size: 0.85rem;
 }
+
+/* ==============================
+   STATUS DO CARD
+   ============================== */
+
+/* Borda lateral colorida conforme status */
+.card-status-producao {
+  border-left: 5px solid #16a34a;
+}
+.card-status-setup {
+  border-left: 5px solid #eab308;
+}
+.card-status-manutencao {
+  border-left: 5px solid #dc2626;
+}
+
+/* Badge de status no topo do card */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.status-badge-producao  { background: #15803d; color: #fff; }
+.status-badge-setup     { background: #a16207; color: #fff; }
+.status-badge-manutencao{ background: #b91c1c; color: #fff; }
+
+/* Chips clicáveis de status — active-chip = selecionado */
+.status-time-chip {
+  transition: opacity 0.15s, box-shadow 0.15s;
+  opacity: 0.55;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+.status-time-chip.active-chip {
+  opacity: 1;
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.25);
+}
+
+/* Tempos acumulados por status */
+.status-times {
+  display: flex;
+  gap: 8px;
+  font-size: 0.72rem;
+  margin-top: 4px;
+}
+.status-time-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-weight: 600;
+}
+.chip-producao   { background: #14532d; color: #86efac; }
+.chip-setup      { background: #713f12; color: #fef08a; }
+.chip-manutencao { background: #7f1d1d; color: #fca5a5; }
