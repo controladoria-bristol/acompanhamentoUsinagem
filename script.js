@@ -249,21 +249,20 @@ const STATUS_CONFIG = {
 
 function applyStatusVisual(root, status) {
   const cfg = STATUS_CONFIG[status];
-  const card = root;
 
   // Borda lateral do card
-  card.classList.remove('card-status-producao', 'card-status-setup', 'card-status-manutencao');
-  card.classList.add(cfg.cardClass);
+  root.classList.remove('card-status-producao', 'card-status-setup', 'card-status-manutencao');
+  root.classList.add(cfg.cardClass);
 
   // Badge
   const badge = root.querySelector('[data-role="statusBadge"]');
   badge.className = `status-badge ${cfg.badgeClass}`;
   badge.textContent = cfg.label;
 
-  // Botões ativos
-  root.querySelector('[data-role="btnProducao"]').classList.toggle('active',   status === 'producao');
-  root.querySelector('[data-role="btnSetup"]').classList.toggle('active',      status === 'setup');
-  root.querySelector('[data-role="btnManutencao"]').classList.toggle('active', status === 'manutencao');
+  // Chips — destaca o ativo
+  root.querySelector('[data-role="btnProducao"]').classList.toggle('active-chip',   status === 'producao');
+  root.querySelector('[data-role="btnSetup"]').classList.toggle('active-chip',      status === 'setup');
+  root.querySelector('[data-role="btnManutencao"]').classList.toggle('active-chip', status === 'manutencao');
 }
 
 // =========================================================
