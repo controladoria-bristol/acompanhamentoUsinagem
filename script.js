@@ -1,7 +1,3 @@
-// =============================
-//  CONFIGURAÇÕES INICIAIS E FIREBASE
-// =============================
-
 const MACHINE_NAMES = [
   'Fresa CNC 1','Fresa CNC 2','Fresa CNC 3','Robodrill 2','D 800-1','Fagor',
   'Robodrill 1','VTC','D 800-2','D 800-3','Centur','Nardine','GL 280',
@@ -20,12 +16,7 @@ firebase.initializeApp({
 const db  = firebase.database();
 const REF = db.ref('usinagem_dashboard_v18_6');
 
-// =========================================================
-//  SERVER TIME OFFSET
-//  Corrige a diferença entre o relógio local e o servidor.
-//  serverNow() retorna o tempo do servidor Firebase,
-//  idêntico em todos os dispositivos.
-// =========================================================
+// server time offset keeps all devices in sync
 let serverTimeOffset = 0;
 db.ref('.info/serverTimeOffset').on('value', snap => {
   serverTimeOffset = snap.val() || 0;
@@ -34,9 +25,6 @@ function serverNow() {
   return Date.now() + serverTimeOffset;
 }
 
-// =========================================================
-//  NOTIFICAÇÃO
-// =========================================================
 function notificar(titulo, mensagem) {
   if (!("Notification" in window)) return;
   if (Notification.permission === "granted") {
@@ -47,9 +35,6 @@ function notificar(titulo, mensagem) {
   }
 }
 
-// =========================================================
-//  FUNÇÕES DE TEMPO
-// =========================================================
 function parseTempoMinutos(str) {
   if (!str) return 0;
   const s = String(str).trim();
@@ -98,10 +83,8 @@ function calcularPrevisto(cycleMin, trocaMin, startStr, endStr, statusAccSec, pa
   return Math.floor(Math.max(turnoTotal - parado, 0) / cicloTotal);
 }
 
-// =========================================================
 //  LEITURA AO VIVO DOS CRONÔMETROS
 //  Usa serverNow() — mesmo resultado em todos os dispositivos
-// =========================================================
 function getLiveStatusSec(m, key) {
   const acc = m.statusAccSec[key] || 0;
   if (m.statusPaused) return acc;
@@ -117,11 +100,9 @@ function getLivePausaSec(m) {
   return acc;
 }
 
-// =========================================================
 //  STATE CENTRAL
 //  machines: dados de cada máquina
 //  cards:    referências DOM de cada card (criado só 1 vez)
-// =========================================================
 const machines = {};  // { [id]: dadosDaMaquina }
 const cards    = {};  // { [id]: { dom refs, chart, timer } }
 
@@ -171,9 +152,6 @@ function rawToMachine(name, raw) {
   };
 }
 
-// =========================================================
-//  VISUAL DE STATUS
-// =========================================================
 const STATUS_CONFIG = {
   producao:   { label: '🟢 Produção',   badgeClass: 'status-badge-producao',   cardClass: 'card-status-producao'   },
   setup:      { label: '🟡 Setup',      badgeClass: 'status-badge-setup',      cardClass: 'card-status-setup'      },
@@ -198,9 +176,6 @@ function applyBtnPausar(c, m) {
   c.btnPausar.classList.toggle('bg-gray-600',  !pausado);
 }
 
-// =========================================================
-//  ATUALIZAR GRÁFICO
-// =========================================================
 function atualizarGrafico(c, m) {
   const predicted = m.predicted || 0;
   const produced  = (m.produced != null && m.produced !== '') ? Number(m.produced) : 0;
@@ -216,9 +191,6 @@ function atualizarGrafico(c, m) {
   c.performanceEl.textContent = `Desempenho: ${ratio.toFixed(1)}%`;
 }
 
-// =========================================================
-//  RENDERIZAR HISTÓRICO
-// =========================================================
 function renderHistory(c, m) {
   c.historyEl.innerHTML = '';
   if (!m.history || m.history.length === 0) {
@@ -242,9 +214,6 @@ function renderHistory(c, m) {
   });
 }
 
-// =========================================================
-//  RENDERIZAR FUTUROS
-// =========================================================
 function renderFuture(c, m) {
   c.futureList.innerHTML = '';
   if (!Array.isArray(m.future)) m.future = [];
@@ -284,10 +253,8 @@ function renderFuture(c, m) {
   }});
 }
 
-// =========================================================
 //  CRIAR CARD — chamado apenas UMA VEZ por máquina
 //  Depois disso só atualizamos os dados, nunca recriamos.
-// =========================================================
 function criarCard(m) {
   const tpl  = document.getElementById('machine-template');
   const node = tpl.content.cloneNode(true);
@@ -332,7 +299,6 @@ function criarCard(m) {
     timer:          null
   };
 
-  // Preenche campos estáticos
   c.title.textContent     = m.id;
   c.subtitle.textContent  = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
   c.operatorInput.value   = m.operator;
@@ -348,7 +314,6 @@ function criarCard(m) {
   applyStatusVisual(c, m);
   applyBtnPausar(c, m);
 
-  // Gráfico
   c.chart = new Chart(root.querySelector('[data-role="chart"]').getContext('2d'), {
     type: 'bar',
     data: {
@@ -363,12 +328,7 @@ function criarCard(m) {
   renderHistory(c, m);
   renderFuture(c, m);
 
-  // =========================================================
-  //  CRONÔMETRO LOCAL — roda a cada 1s e lê do state em memória
-  //  Como usa serverNow(), o valor é idêntico em todos os
-  //  dispositivos que têm o mesmo statusChangedAt.
-  // =========================================================
-  c.timer = setInterval(() => {
+        c.timer = setInterval(() => {
     const secProd  = getLiveStatusSec(m, 'producao');
     const secSetup = getLiveStatusSec(m, 'setup');
     const secManut = getLiveStatusSec(m, 'manutencao');
@@ -390,10 +350,7 @@ function criarCard(m) {
     }
   }, 1000);
 
-  // =========================================================
-  //  EVENTOS DOS BOTÕES
-  // =========================================================
-
+  
   function mudarStatus(novo) {
     if (m.status === novo && !m.statusPaused) return;
     const agora = serverNow();
@@ -547,12 +504,10 @@ function criarCard(m) {
   return c;
 }
 
-// =========================================================
 //  ATUALIZAR CARD EXISTENTE SEM RECRIAR
 //  Chamado quando o Firebase notifica uma mudança.
 //  Atualiza só o objeto m em memória — o setInterval
 //  já está rodando e exibe o valor correto no próximo tick.
-// =========================================================
 function atualizarCard(c, m, raw) {
   const statusMudou   = m.status !== (raw.status || 'producao') ||
                         m.statusPaused !== (raw.statusPaused || false);
@@ -613,12 +568,6 @@ function atualizarCard(c, m, raw) {
   }
 }
 
-// =========================================================
-//  FIREBASE LISTENER
-//  - 1ª carga: cria todos os cards
-//  - Atualizações seguintes: só atualiza o state em memória
-//    e os visuais afetados — sem recriar nada
-// =========================================================
 let primeiraCarrega = true;
 let prevSnapshot    = {};
 
@@ -684,9 +633,6 @@ REF.on('value', snapshot => {
   if (si && si.value) filtrarCards(si.value);
 });
 
-// =========================================================
-//  EXPORTAÇÃO CSV
-// =========================================================
 function exportCSV() {
   const hoje    = new Date();
   const dataFmt = hoje.toLocaleDateString('pt-BR');
@@ -740,9 +686,6 @@ function baixarCSV(content, filename) {
   a.download = filename; a.click();
 }
 
-// =========================================================
-//  RESET
-// =========================================================
 function resetAll() {
   if (!confirm('Resetar tudo e apagar dados?')) return;
   MACHINE_NAMES.forEach(name => {
@@ -750,9 +693,6 @@ function resetAll() {
   });
 }
 
-// =========================================================
-//  PESQUISA
-// =========================================================
 function filtrarCards(termo) {
   const q = termo.trim().toLowerCase();
   let visiveis = 0;
