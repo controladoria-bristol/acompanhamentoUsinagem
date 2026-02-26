@@ -70,16 +70,22 @@ function minutosDisponiveis(startStr, endStr) {
     const p = t.split(':').map(Number);
     return p.length >= 2 ? p[0] * 60 + p[1] : 0;
   }
-  return Math.max(toMin(endStr) - toMin(startStr), 0);
+  const start = toMin(startStr), end = toMin(endStr);
+  let diff = end - start;
+  if (diff <= 0) return 0;
+  const lunchStart = 12 * 60, lunchEnd = 13 * 60;
+  if (end > lunchStart && start < lunchEnd)
+    diff -= Math.min(end, lunchEnd) - Math.max(start, lunchStart);
+  return Math.max(diff, 0);
 }
 
-function calcularPrevisto(cycleMin, trocaMin, startStr, endStr, statusAccSec, pausaAccSec) {
+function calcularPrevisto(cycleMin, trocaMin, startStr, endStr, statusAccSec) {
   if (!cycleMin || cycleMin <= 0) return 0;
   const cicloTotal = cycleMin + (trocaMin || 0);
   if (cicloTotal <= 0) return 0;
   const turnoTotal = minutosDisponiveis(startStr, endStr);
   if (turnoTotal <= 0) return 0;
-  const parado = ((statusAccSec?.setup || 0) + (statusAccSec?.manutencao || 0) + (pausaAccSec || 0)) / 60;
+  const parado = ((statusAccSec?.setup || 0) + (statusAccSec?.manutencao || 0)) / 60;
   return Math.floor(Math.max(turnoTotal - parado, 0) / cicloTotal);
 }
 
@@ -118,7 +124,7 @@ function machineDefault(name) {
     status: 'producao',
     statusChangedAt: null,
     statusPaused: false,
-    statusAccSec: { producao: 0, setup: 0, manutencao: 0 },
+    statusAccSec: { setup: 0, manutencao: 0 },
     pausaAccSec: 0,
     pausaChangedAt: null
   };
@@ -143,7 +149,6 @@ function rawToMachine(name, raw) {
     statusChangedAt: raw.statusChangedAt || null,
     statusPaused:    raw.statusPaused    || false,
     statusAccSec: {
-      producao:   raw.statusAccSec?.producao   || 0,
       setup:      raw.statusAccSec?.setup      || 0,
       manutencao: raw.statusAccSec?.manutencao || 0
     },
@@ -164,9 +169,9 @@ function applyStatusVisual(c, m) {
   c.root.classList.add(cfg.cardClass);
   c.statusBadge.className   = `status-badge ${cfg.badgeClass}`;
   c.statusBadge.textContent = m.statusPaused ? '⏸ Pausado' : cfg.label;
-  ['btnProducao','btnSetup','btnManutencao'].forEach(r => c[r].classList.remove('active-chip'));
+  ['btnSetup','btnManutencao'].forEach(r => c[r] && c[r].classList.remove('active-chip'));
   const map = { producao:'btnProducao', setup:'btnSetup', manutencao:'btnManutencao' };
-  c[map[m.status]].classList.add('active-chip');
+  if (c[map[m.status]]) c[map[m.status]].classList.add('active-chip');
 }
 
 function applyBtnPausar(c, m) {
@@ -204,7 +209,6 @@ function renderHistory(c, m) {
       <div class="text-sm">Operador: <strong>${h.operator}</strong> · Peça: <strong>${h.process}</strong></div>
       <div class="text-xs text-gray-400">Previsto: ${h.predicted} · Realizado: ${h.produced??'-'} · Eficiência: ${h.efficiency??'-'}%</div>
       <div class="text-xs mt-0.5 flex gap-2 flex-wrap">
-        <span class="status-time-chip chip-producao" style="pointer-events:none">🟢 ${formatSeconds(h.statusAccSec?.producao||0)}</span>
         <span class="status-time-chip chip-setup"    style="pointer-events:none">🟡 ${formatSeconds(h.statusAccSec?.setup||0)}</span>
         <span class="status-time-chip chip-manutencao" style="pointer-events:none">🔴 ${formatSeconds(h.statusAccSec?.manutencao||0)}</span>
         ${h.pausaAccSec ? `<span class="status-time-chip chip-setup" style="pointer-events:none">⏸ ${formatSeconds(h.pausaAccSec)}</span>` : ''}
@@ -291,7 +295,6 @@ function criarCard(m) {
     btnManutencao:  root.querySelector('[data-role="btnManutencao"]'),
     btnPausar:      root.querySelector('[data-role="btnPausar"]'),
     btnZerar:       root.querySelector('[data-role="btnZerar"]'),
-    elProd:         root.querySelector('[data-role="timeProducao"]'),
     elSetup:        root.querySelector('[data-role="timeSetup"]'),
     elManut:        root.querySelector('[data-role="timeManutencao"]'),
     statusBadge:    root.querySelector('[data-role="statusBadge"]'),
@@ -329,19 +332,40 @@ function criarCard(m) {
   renderFuture(c, m);
 
         c.timer = setInterval(() => {
-    const secProd  = getLiveStatusSec(m, 'producao');
+    // Para o cronômetro quando o turno encerrar
+    const agora = new Date();
+    const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+    const [eh, em] = (m.endTime || '16:45').split(':').map(Number);
+    if (agoraMin >= eh * 60 + em) {
+      clearInterval(c.timer);
+      c.timer = null;
+      // Garante que o status ativo acumule o tempo até o fim do turno
+      if (m.statusChangedAt && !m.statusPaused) {
+        const extra = Math.floor((serverNow() - m.statusChangedAt) / 1000);
+        m.statusAccSec[m.status] = (m.statusAccSec[m.status] || 0) + extra;
+        m.statusChangedAt = null;
+        REF.child(m.id).update({ statusAccSec: m.statusAccSec, statusChangedAt: null });
+      }
+      if (m.pausaChangedAt) {
+        const extra = Math.floor((serverNow() - m.pausaChangedAt) / 1000);
+        m.pausaAccSec = (m.pausaAccSec || 0) + extra;
+        m.pausaChangedAt = null;
+        REF.child(m.id).update({ pausaAccSec: m.pausaAccSec, pausaChangedAt: null });
+      }
+      return;
+    }
+
     const secSetup = getLiveStatusSec(m, 'setup');
     const secManut = getLiveStatusSec(m, 'manutencao');
     const secPausa = getLivePausaSec(m);
 
-    c.elProd.textContent  = formatSeconds(secProd);
     c.elSetup.textContent = formatSeconds(secSetup);
     c.elManut.textContent = formatSeconds(secManut);
     c.paradaDisplay.textContent = formatSeconds(secSetup + secManut + secPausa);
 
     const novo = calcularPrevisto(
       m.cycleMin, m.trocaMin, m.startTime, m.endTime,
-      { setup: secSetup, manutencao: secManut }, secPausa
+      { setup: secSetup, manutencao: secManut }
     );
     if (novo !== m.predicted) {
       m.predicted = novo;
@@ -377,7 +401,7 @@ function criarCard(m) {
     });
   }
 
-  c.btnProducao.addEventListener('click',   () => mudarStatus('producao'));
+  if (c.btnProducao) c.btnProducao.addEventListener('click', () => mudarStatus('producao'));
   c.btnSetup.addEventListener('click',      () => mudarStatus('setup'));
   c.btnManutencao.addEventListener('click', () => mudarStatus('manutencao'));
 
@@ -425,7 +449,7 @@ function criarCard(m) {
     m.statusPaused   = false;
     applyBtnPausar(c, m);
     REF.child(m.id).update({
-      statusAccSec:    { producao: 0, setup: 0, manutencao: 0 },
+      statusAccSec:    { setup: 0, manutencao: 0 },
       pausaAccSec:     0,
       pausaChangedAt:  null,
       statusPaused:    false,
@@ -456,7 +480,7 @@ function criarCard(m) {
     const secManut    = getLiveStatusSec(m, 'manutencao');
     const secPausa    = getLivePausaSec(m);
     const predicted   = calcularPrevisto(cycleVal, trocaVal, startVal, endVal,
-      { setup: secSetup, manutencao: secManut }, secPausa);
+      { setup: secSetup, manutencao: secManut });
     const efficiency  = (predicted > 0 && producedVal != null)
       ? ((producedVal / predicted) * 100).toFixed(1) : '-';
     if (!Array.isArray(m.history)) m.history = [];
@@ -469,7 +493,7 @@ function criarCard(m) {
       produced: producedVal, predicted, efficiency,
       observacao: c.observacaoInput.value,
       status: m.status,
-      statusAccSec: { producao: getLiveStatusSec(m,'producao'), setup: secSetup, manutencao: secManut },
+      statusAccSec: { setup: secSetup, manutencao: secManut },
       pausaAccSec: secPausa
     });
     renderHistory(c, m);
@@ -527,7 +551,6 @@ function atualizarCard(c, m, raw) {
   m.statusChangedAt = raw.statusChangedAt || null;
   m.statusPaused    = raw.statusPaused    || false;
   m.statusAccSec    = {
-    producao:   raw.statusAccSec?.producao   || 0,
     setup:      raw.statusAccSec?.setup      || 0,
     manutencao: raw.statusAccSec?.manutencao || 0
   };
@@ -639,7 +662,7 @@ function exportCSV() {
   const horaFmt = hoje.toLocaleTimeString('pt-BR');
   const dataArq = dataFmt.replace(/\//g,'-');
 
-  const resumo = ['Data;Hora;Máquina;Operador;Processo;Ciclo (min);Troca (min);Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Produção;T.Setup;T.Manutenção;T.Pausa;Observação;Processos Futuros'];
+  const resumo = ['Data;Hora;Máquina;Operador;Processo;Ciclo (min);Troca (min);Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação;Processos Futuros'];
   MACHINE_NAMES.forEach(name => {
     const m = machines[name]; if (!m) return;
     const ef  = m.predicted && m.produced!=null ? ((m.produced/m.predicted)*100).toFixed(1).replace('.',',') : '';
@@ -649,7 +672,6 @@ function exportCSV() {
       (m.id||'').replace(/;/g,','), (m.operator||'').replace(/;/g,','), (m.process||'').replace(/;/g,','),
       m.cycleMin??'', m.trocaMin??'', m.startTime||'', m.endTime||'',
       m.predicted??0, m.produced??'', ef, m.status||'',
-      formatSeconds(getLiveStatusSec(m,'producao')),
       formatSeconds(getLiveStatusSec(m,'setup')),
       formatSeconds(getLiveStatusSec(m,'manutencao')),
       formatSeconds(getLivePausaSec(m)),
@@ -658,7 +680,7 @@ function exportCSV() {
   });
   baixarCSV('\uFEFF'+resumo.join('\n'), `producao_resumo_${dataArq}.csv`);
 
-  const hist = ['Data Registro;Hora Registro;Máquina;Operador;Processo;Ciclo;Troca;Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Produção;T.Setup;T.Manutenção;T.Pausa;Observação'];
+  const hist = ['Data Registro;Hora Registro;Máquina;Operador;Processo;Ciclo;Troca;Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação'];
   MACHINE_NAMES.forEach(name => {
     const m = machines[name]; if (!m) return;
     (m.history||[]).forEach(h => {
@@ -669,7 +691,6 @@ function exportCSV() {
         h.cycleMin??'', h.trocaMin??'', h.startTime||'', h.endTime||'',
         h.predicted??'', h.produced??'',
         (h.efficiency??'').toString().replace('.',','), h.status||'',
-        formatSeconds(h.statusAccSec?.producao||0),
         formatSeconds(h.statusAccSec?.setup||0),
         formatSeconds(h.statusAccSec?.manutencao||0),
         formatSeconds(h.pausaAccSec||0),
