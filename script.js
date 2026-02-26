@@ -169,7 +169,7 @@ function applyStatusVisual(c, m) {
   c.root.classList.add(cfg.cardClass);
   c.statusBadge.className   = `status-badge ${cfg.badgeClass}`;
   c.statusBadge.textContent = m.statusPaused ? '⏸ Pausado' : cfg.label;
-  ['btnSetup','btnManutencao'].forEach(r => c[r] && c[r].classList.remove('active-chip'));
+  ['btnProducao','btnSetup','btnManutencao'].forEach(r => c[r] && c[r].classList.remove('active-chip'));
   const map = { producao:'btnProducao', setup:'btnSetup', manutencao:'btnManutencao' };
   if (c[map[m.status]]) c[map[m.status]].classList.add('active-chip');
 }
@@ -401,7 +401,7 @@ function criarCard(m) {
     });
   }
 
-  if (c.btnProducao) c.btnProducao.addEventListener('click', () => mudarStatus('producao'));
+  c.btnProducao.addEventListener('click', () => mudarStatus('producao'));
   c.btnSetup.addEventListener('click',      () => mudarStatus('setup'));
   c.btnManutencao.addEventListener('click', () => mudarStatus('manutencao'));
 
