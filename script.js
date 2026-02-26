@@ -387,8 +387,9 @@ function criarCard(m) {
       m.pausaAccSec    = (m.pausaAccSec || 0) + extra;
       m.pausaChangedAt = null;
     }
-    m.status       = novo;
-    m.statusPaused = false;
+    m.status          = novo;
+    m.statusPaused    = false;
+    m.statusChangedAt = serverNow(); // aproximação local; Firebase corrige com timestamp exato
     applyStatusVisual(c, m);
     applyBtnPausar(c, m);
     REF.child(m.id).update({
@@ -415,6 +416,7 @@ function criarCard(m) {
       }
       m.statusPaused    = true;
       m.statusChangedAt = null;
+      m.pausaChangedAt  = serverNow(); // aproximação local
       applyStatusVisual(c, m);
       applyBtnPausar(c, m);
       REF.child(m.id).update({
@@ -428,8 +430,9 @@ function criarCard(m) {
         const extra = Math.floor((agora - m.pausaChangedAt) / 1000);
         m.pausaAccSec = (m.pausaAccSec || 0) + extra;
       }
-      m.statusPaused   = false;
-      m.pausaChangedAt = null;
+      m.statusPaused    = false;
+      m.pausaChangedAt  = null;
+      m.statusChangedAt = serverNow(); // aproximação local
       applyStatusVisual(c, m);
       applyBtnPausar(c, m);
       REF.child(m.id).update({
@@ -447,6 +450,7 @@ function criarCard(m) {
     m.pausaAccSec    = 0;
     m.pausaChangedAt = null;
     m.statusPaused   = false;
+    m.statusChangedAt = serverNow(); // aproximação local
     applyBtnPausar(c, m);
     REF.child(m.id).update({
       statusAccSec:    { setup: 0, manutencao: 0 },
