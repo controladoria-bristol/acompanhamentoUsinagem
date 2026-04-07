@@ -144,3 +144,36 @@ select:focus,
     font-size: 0.9rem;
   }
 }
+
+/* ── Banco de Ciclos badge ───────────────────────────── */
+.banco-badge {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  animation: bancoBadgeFade 0.25s ease;
+}
+
+@keyframes bancoBadgeFade {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Ciclo preenchido automaticamente */
+.banco-badge-ok {
+  background: rgba(21, 128, 61, 0.18);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+/* Ciclo encontrado mas campos já estavam preenchidos */
+.banco-badge-info {
+  background: rgba(37, 99, 235, 0.15);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
