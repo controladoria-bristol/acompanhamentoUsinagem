@@ -1,10 +1,8 @@
-/* canvas */
 canvas {
   width: 100% !important;
   height: 100px !important;
 }
 
-/* priority badges */
 .prioridade-vermelho {
   background-color: #b91c1c !important;
   color: #fff !important;
@@ -21,7 +19,6 @@ canvas {
   font-weight: 700;
 }
 
-/* queue number */
 .wait-badge {
   width: 26px;
   height: 26px;
@@ -35,18 +32,17 @@ canvas {
   border: 2px solid rgba(0,0,0,0.6);
 }
 
-/* focus ring */
-input:focus, select:focus, [contenteditable]:focus {
+input:focus,
+select:focus,
+[contenteditable]:focus {
   outline: none;
   box-shadow: 0 0 0 2px rgba(56,189,248,0.35);
 }
 
-/* card border by status */
 .card-status-producao  { border-left: 5px solid #16a34a; }
 .card-status-setup     { border-left: 5px solid #eab308; }
 .card-status-manutencao{ border-left: 5px solid #dc2626; }
 
-/* status badge */
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -58,11 +54,11 @@ input:focus, select:focus, [contenteditable]:focus {
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
+
 .status-badge-producao   { background: #15803d; color: #fff; }
 .status-badge-setup      { background: #a16207; color: #fff; }
 .status-badge-manutencao { background: #b91c1c; color: #fff; }
 
-/* clickable status chips */
 .status-time-chip {
   display: inline-flex;
   align-items: center;
@@ -76,33 +72,40 @@ input:focus, select:focus, [contenteditable]:focus {
   transition: opacity 0.15s, box-shadow 0.15s, border-color 0.15s;
   opacity: 0.5;
   white-space: nowrap;
-  /* toque mais fácil no mobile */
   min-height: 36px;
 }
+
 .status-time-chip.active-chip {
   opacity: 1;
   border-color: #fff;
   box-shadow: 0 0 0 2px rgba(255,255,255,0.2);
 }
+
 .chip-producao   { background: #14532d; color: #86efac; }
 .chip-setup      { background: #713f12; color: #fef08a; }
 .chip-manutencao { background: #7f1d1d; color: #fca5a5; }
 
-/* pause / reset buttons */
-.btn-ctrl {
-  padding: 5px 10px;
-  border-radius: 6px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: #fff;
-  border-width: 1px;
-  border-style: solid;
-  white-space: nowrap;
+.btn-ctrl,
+.btn-action {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #e5e7eb !important;
+  background: #1f2937 !important;
+  border: 1px solid #374151 !important;
   min-height: 36px;
   cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border 0.15s;
 }
 
-/* form fields */
+.btn-ctrl:hover,
+.btn-action:hover {
+  background: #374151 !important;
+  border-color: #4b5563 !important;
+}
+
 .field-label {
   display: block;
   font-size: 0.7rem;
@@ -112,6 +115,7 @@ input:focus, select:focus, [contenteditable]:focus {
   color: #d1d5db;
   margin-bottom: 3px;
 }
+
 .field-input {
   width: 100%;
   padding: 8px 10px;
@@ -120,32 +124,23 @@ input:focus, select:focus, [contenteditable]:focus {
   color: #f3f4f6;
   font-size: 0.85rem;
   border: 1px solid #4b5563;
-  /* toque confortável no mobile */
   min-height: 40px;
   box-sizing: border-box;
 }
-.field-input::placeholder { color: #6b7280; }
 
-/* action buttons */
-.btn-action {
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: #fff;
-  text-align: center;
-  min-height: 40px;
-  cursor: pointer;
-  white-space: nowrap;
+.field-input::placeholder {
+  color: #6b7280;
 }
 
-/* Em telas muito pequenas, chips ficam menores */
-/* responsive tweaks */
 @media (max-width: 360px) {
-  .status-time-chip { font-size: 0.68rem; padding: 4px 7px; }
+  .status-time-chip {
+    font-size: 0.68rem;
+    padding: 4px 7px;
+  }
 }
 
-/* Tablet: 2 colunas já são suficientes */
 @media (min-width: 640px) and (max-width: 1279px) {
-  .field-input { font-size: 0.9rem; }
+  .field-input {
+    font-size: 0.9rem;
+  }
 }
