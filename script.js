@@ -51,8 +51,10 @@ function parseTempoMinutos(str) {
 function formatMinutesToMMSS(minFloat) {
   if (!minFloat || isNaN(minFloat)) return '-';
   const totalSeconds = Math.round(minFloat * 60);
-  const m = Math.floor(totalSeconds / 60);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
@@ -674,7 +676,7 @@ function exportCSV() {
       hist.push([
         d.toLocaleDateString('pt-BR'), d.toLocaleTimeString('pt-BR'),
         (m.id||'').replace(/;/g,','), (h.operator||'').replace(/;/g,','), (h.process||'').replace(/;/g,','),
-        h.cycleMin??'', h.trocaMin??'', h.startTime||'', h.endTime||'',
+        h.cycleMin!=null?formatMinutesToMMSS(h.cycleMin):'', h.trocaMin!=null?formatMinutesToMMSS(h.trocaMin):'', h.startTime||'', h.endTime||'',
         h.predicted??'', h.produced??'',
         (h.efficiency??'').toString().replace('.',','), h.status||'',
         formatSeconds(h.statusAccSec?.setup||0),
