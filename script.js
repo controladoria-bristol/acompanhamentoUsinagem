@@ -14,8 +14,73 @@ firebase.initializeApp({
   appId: "1:677023128312:web:75376363a62105f360f90d"
 });
 
-const db  = firebase.database();
-const REF = db.ref('usinagem_dashboard_v18_6');
+const db        = firebase.database();
+const REF       = db.ref('usinagem_dashboard_v18_6');
+const CICLOS_REF = db.ref('usinagem_ciclos_banco'); // banco de ciclos por máquina+peça
+
+// Cache local do banco de ciclos — atualizado em tempo real pelo Firebase
+let ciclosDB = {};
+CICLOS_REF.on('value', snap => {
+  ciclosDB = snap.val() || {};
+});
+
+// Chave normalizada: "Fresa CNC 1||flange 300"
+function cicloKey(machineId, process) {
+  return `${machineId}||${process.trim().toLowerCase()}`;
+}
+
+// Salva um ciclo no banco (chamado após confirmação do usuário)
+function salvarCicloNoBanco(machineId, process, cycleMin, trocaMin) {
+  const key  = cicloKey(machineId, process);
+  const dado = { machineId, process, cycleMin: cycleMin ?? null, trocaMin: trocaMin ?? null, updatedAt: Date.now() };
+  CICLOS_REF.child(key.replace(/[.#$/[\]]/g, '_')).set(dado);
+}
+
+// Busca ciclo no banco e, se encontrar, preenche os campos e exibe badge
+function checarEPreencherCiclo(c, machineId) {
+  const processo = c.processInput.value.trim();
+  if (!processo) { ocultarBancoBadge(c); return; }
+
+  const key  = cicloKey(machineId, processo);
+  const safe = key.replace(/[.#$/[\]]/g, '_');
+
+  // Busca direto no cache local (já sincronizado pelo Firebase listener)
+  const dado = ciclosDB[safe];
+  if (dado && (dado.cycleMin != null || dado.trocaMin != null)) {
+    // Só preenche se os campos estiverem vazios OU se o usuário confirmar sobrescrever
+    const cycleAtual = c.cycleInput.value.trim();
+    const trocaAtual = c.trocaInput.value.trim();
+    if (!cycleAtual && !trocaAtual) {
+      // Campos vazios → preenche silenciosamente
+      if (dado.cycleMin != null) c.cycleInput.value = formatMinutesToMMSS(dado.cycleMin);
+      if (dado.trocaMin != null) c.trocaInput.value = formatMinutesToMMSS(dado.trocaMin);
+      exibirBancoBadge(c, dado, 'auto');
+    } else {
+      // Campos já preenchidos → mostra badge de aviso sem sobrescrever
+      exibirBancoBadge(c, dado, 'encontrado');
+    }
+  } else {
+    ocultarBancoBadge(c);
+  }
+}
+
+function exibirBancoBadge(c, dado, modo) {
+  if (!c.bancoBadge) return;
+  const cicloTxt = dado.cycleMin != null ? formatMinutesToMMSS(dado.cycleMin) : '-';
+  const trocaTxt = dado.trocaMin != null ? formatMinutesToMMSS(dado.trocaMin) : '-';
+  if (modo === 'auto') {
+    c.bancoBadge.textContent = `✅ Ciclo do banco: ${cicloTxt} · Troca: ${trocaTxt}`;
+    c.bancoBadge.className   = 'banco-badge banco-badge-ok';
+  } else {
+    c.bancoBadge.textContent = `💡 Banco: ciclo ${cicloTxt} · troca ${trocaTxt}`;
+    c.bancoBadge.className   = 'banco-badge banco-badge-info';
+  }
+  c.bancoBadge.style.display = 'flex';
+}
+
+function ocultarBancoBadge(c) {
+  if (c.bancoBadge) c.bancoBadge.style.display = 'none';
+}
 
 // server time offset keeps all devices in sync
 let serverTimeOffset = 0;
@@ -51,10 +116,8 @@ function parseTempoMinutos(str) {
 function formatMinutesToMMSS(minFloat) {
   if (!minFloat || isNaN(minFloat)) return '-';
   const totalSeconds = Math.round(minFloat * 60);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
+  const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
@@ -305,6 +368,13 @@ function criarCard(m) {
     timer:          null
   };
 
+  // Badge do banco de ciclos — criado dinamicamente abaixo do campo Peça
+  const bancoBadge = document.createElement('div');
+  bancoBadge.style.display = 'none';
+  bancoBadge.className = 'banco-badge';
+  c.processInput.parentNode.appendChild(bancoBadge);
+  c.bancoBadge = bancoBadge;
+
   c.title.textContent     = m.id;
   c.subtitle.textContent  = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
   c.operatorInput.value   = m.operator;
@@ -316,6 +386,11 @@ function criarCard(m) {
   c.producedInput.value   = m.produced != null ? m.produced : '';
   c.observacaoInput.value = m.observacao || '';
   c.predictedEl.textContent = m.predicted ?? 0;
+
+  // Auto-preencher ciclo ao sair do campo Peça
+  c.processInput.addEventListener('blur', () => checarEPreencherCiclo(c, m.id));
+  // Também verifica ao carregar se já há peça preenchida
+  if (m.process) setTimeout(() => checarEPreencherCiclo(c, m.id), 800);
 
   applyStatusVisual(c, m);
   applyBtnPausar(c, m);
@@ -475,6 +550,29 @@ function criarCard(m) {
     m.produced   = c.producedInput.value.trim() === '' ? null : Number(c.producedInput.value.trim());
     c.subtitle.textContent = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
     REF.child(m.id).set(m);
+
+    // ── Banco de ciclos ──────────────────────────────────────────
+    if (m.process && m.cycleMin != null) {
+      const key  = cicloKey(m.id, m.process);
+      const safe = key.replace(/[.#$/[\]]/g, '_');
+      const existente = ciclosDB[safe];
+      const cicloDiferente = !existente ||
+        existente.cycleMin !== m.cycleMin ||
+        existente.trocaMin !== (m.trocaMin ?? null);
+
+      if (cicloDiferente) {
+        const cicloFmt = formatMinutesToMMSS(m.cycleMin);
+        const trocaFmt = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : 'sem troca';
+        const msg = existente
+          ? `Atualizar banco de ciclos?\n\nMáquina: ${m.id}\nPeça: ${m.process}\nCiclo: ${cicloFmt} · Troca: ${trocaFmt}`
+          : `Salvar ciclo no banco para uso futuro?\n\nMáquina: ${m.id}\nPeça: ${m.process}\nCiclo: ${cicloFmt} · Troca: ${trocaFmt}`;
+        if (confirm(msg)) {
+          salvarCicloNoBanco(m.id, m.process, m.cycleMin, m.trocaMin);
+          exibirBancoBadge(c, { cycleMin: m.cycleMin, trocaMin: m.trocaMin }, 'auto');
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────
   });
 
   c.addHistBtn.addEventListener('click', () => {
@@ -666,7 +764,26 @@ REF.on('value', snapshot => {
 function exportCSV() {
   const hoje    = new Date();
   const dataFmt = hoje.toLocaleDateString('pt-BR');
+  const horaFmt = hoje.toLocaleTimeString('pt-BR');
   const dataArq = dataFmt.replace(/\//g,'-');
+
+  const resumo = ['Data;Hora;Máquina;Operador;Processo;Ciclo (min);Troca (min);Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação;Processos Futuros'];
+  MACHINE_NAMES.forEach(name => {
+    const m = machines[name]; if (!m) return;
+    const ef  = m.predicted && m.produced!=null ? ((m.produced/m.predicted)*100).toFixed(1).replace('.',',') : '';
+    const fut = (Array.isArray(m.future)?m.future:[]).map((f,i)=>`${i+1}. ${f.name} [${f.priority}]`).join(' | ').replace(/;/g,',');
+    resumo.push([
+      dataFmt, horaFmt,
+      (m.id||'').replace(/;/g,','), (m.operator||'').replace(/;/g,','), (m.process||'').replace(/;/g,','),
+      m.cycleMin??'', m.trocaMin??'', m.startTime||'', m.endTime||'',
+      m.predicted??0, m.produced??'', ef, m.status||'',
+      formatSeconds(getLiveStatusSec(m,'setup')),
+      formatSeconds(getLiveStatusSec(m,'manutencao')),
+      formatSeconds(getLivePausaSec(m)),
+      (m.observacao||'').replace(/;/g,','), fut
+    ].join(';'));
+  });
+  baixarCSV('\uFEFF'+resumo.join('\n'), `producao_resumo_${dataArq}.csv`);
 
   const hist = ['Data Registro;Hora Registro;Máquina;Operador;Processo;Ciclo;Troca;Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação'];
   MACHINE_NAMES.forEach(name => {
@@ -676,7 +793,7 @@ function exportCSV() {
       hist.push([
         d.toLocaleDateString('pt-BR'), d.toLocaleTimeString('pt-BR'),
         (m.id||'').replace(/;/g,','), (h.operator||'').replace(/;/g,','), (h.process||'').replace(/;/g,','),
-        h.cycleMin!=null?formatMinutesToMMSS(h.cycleMin):'', h.trocaMin!=null?formatMinutesToMMSS(h.trocaMin):'', h.startTime||'', h.endTime||'',
+        h.cycleMin??'', h.trocaMin??'', h.startTime||'', h.endTime||'',
         h.predicted??'', h.produced??'',
         (h.efficiency??'').toString().replace('.',','), h.status||'',
         formatSeconds(h.statusAccSec?.setup||0),
