@@ -664,26 +664,7 @@ REF.on('value', snapshot => {
 function exportCSV() {
   const hoje    = new Date();
   const dataFmt = hoje.toLocaleDateString('pt-BR');
-  const horaFmt = hoje.toLocaleTimeString('pt-BR');
   const dataArq = dataFmt.replace(/\//g,'-');
-
-  const resumo = ['Data;Hora;Máquina;Operador;Processo;Ciclo (min);Troca (min);Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação;Processos Futuros'];
-  MACHINE_NAMES.forEach(name => {
-    const m = machines[name]; if (!m) return;
-    const ef  = m.predicted && m.produced!=null ? ((m.produced/m.predicted)*100).toFixed(1).replace('.',',') : '';
-    const fut = (Array.isArray(m.future)?m.future:[]).map((f,i)=>`${i+1}. ${f.name} [${f.priority}]`).join(' | ').replace(/;/g,',');
-    resumo.push([
-      dataFmt, horaFmt,
-      (m.id||'').replace(/;/g,','), (m.operator||'').replace(/;/g,','), (m.process||'').replace(/;/g,','),
-      m.cycleMin??'', m.trocaMin??'', m.startTime||'', m.endTime||'',
-      m.predicted??0, m.produced??'', ef, m.status||'',
-      formatSeconds(getLiveStatusSec(m,'setup')),
-      formatSeconds(getLiveStatusSec(m,'manutencao')),
-      formatSeconds(getLivePausaSec(m)),
-      (m.observacao||'').replace(/;/g,','), fut
-    ].join(';'));
-  });
-  baixarCSV('\uFEFF'+resumo.join('\n'), `producao_resumo_${dataArq}.csv`);
 
   const hist = ['Data Registro;Hora Registro;Máquina;Operador;Processo;Ciclo;Troca;Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação'];
   MACHINE_NAMES.forEach(name => {
