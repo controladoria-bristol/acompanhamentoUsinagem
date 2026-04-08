@@ -14,73 +14,8 @@ firebase.initializeApp({
   appId: "1:677023128312:web:75376363a62105f360f90d"
 });
 
-const db        = firebase.database();
-const REF       = db.ref('usinagem_dashboard_v18_6');
-const CICLOS_REF = db.ref('usinagem_ciclos_banco'); // banco de ciclos por máquina+peça
-
-// Cache local do banco de ciclos — atualizado em tempo real pelo Firebase
-let ciclosDB = {};
-CICLOS_REF.on('value', snap => {
-  ciclosDB = snap.val() || {};
-});
-
-// Chave normalizada: "Fresa CNC 1||flange 300"
-function cicloKey(machineId, process) {
-  return `${machineId}||${process.trim().toLowerCase()}`;
-}
-
-// Salva um ciclo no banco (chamado após confirmação do usuário)
-function salvarCicloNoBanco(machineId, process, cycleMin, trocaMin) {
-  const key  = cicloKey(machineId, process);
-  const dado = { machineId, process, cycleMin: cycleMin ?? null, trocaMin: trocaMin ?? null, updatedAt: Date.now() };
-  CICLOS_REF.child(key.replace(/[.#$/[\]]/g, '_')).set(dado);
-}
-
-// Busca ciclo no banco e, se encontrar, preenche os campos e exibe badge
-function checarEPreencherCiclo(c, machineId) {
-  const processo = c.processInput.value.trim();
-  if (!processo) { ocultarBancoBadge(c); return; }
-
-  const key  = cicloKey(machineId, processo);
-  const safe = key.replace(/[.#$/[\]]/g, '_');
-
-  // Busca direto no cache local (já sincronizado pelo Firebase listener)
-  const dado = ciclosDB[safe];
-  if (dado && (dado.cycleMin != null || dado.trocaMin != null)) {
-    // Só preenche se os campos estiverem vazios OU se o usuário confirmar sobrescrever
-    const cycleAtual = c.cycleInput.value.trim();
-    const trocaAtual = c.trocaInput.value.trim();
-    if (!cycleAtual && !trocaAtual) {
-      // Campos vazios → preenche silenciosamente
-      if (dado.cycleMin != null) c.cycleInput.value = formatMinutesToMMSS(dado.cycleMin);
-      if (dado.trocaMin != null) c.trocaInput.value = formatMinutesToMMSS(dado.trocaMin);
-      exibirBancoBadge(c, dado, 'auto');
-    } else {
-      // Campos já preenchidos → mostra badge de aviso sem sobrescrever
-      exibirBancoBadge(c, dado, 'encontrado');
-    }
-  } else {
-    ocultarBancoBadge(c);
-  }
-}
-
-function exibirBancoBadge(c, dado, modo) {
-  if (!c.bancoBadge) return;
-  const cicloTxt = dado.cycleMin != null ? formatMinutesToMMSS(dado.cycleMin) : '-';
-  const trocaTxt = dado.trocaMin != null ? formatMinutesToMMSS(dado.trocaMin) : '-';
-  if (modo === 'auto') {
-    c.bancoBadge.textContent = `✅ Ciclo do banco: ${cicloTxt} · Troca: ${trocaTxt}`;
-    c.bancoBadge.className   = 'banco-badge banco-badge-ok';
-  } else {
-    c.bancoBadge.textContent = `💡 Banco: ciclo ${cicloTxt} · troca ${trocaTxt}`;
-    c.bancoBadge.className   = 'banco-badge banco-badge-info';
-  }
-  c.bancoBadge.style.display = 'flex';
-}
-
-function ocultarBancoBadge(c) {
-  if (c.bancoBadge) c.bancoBadge.style.display = 'none';
-}
+const db  = firebase.database();
+const REF = db.ref('usinagem_dashboard_v18_6');
 
 // server time offset keeps all devices in sync
 let serverTimeOffset = 0;
@@ -130,18 +65,41 @@ function formatSeconds(totalSec) {
   return `${m}:${String(s).padStart(2,'0')}`;
 }
 
+function isOvernightShift(startStr, endStr) {
+  if (!startStr || !endStr) return false;
+  function toMin(t) { const p = t.split(':').map(Number); return p[0]*60+(p[1]||0); }
+  return toMin(endStr) < toMin(startStr);
+}
+
 function minutosDisponiveis(startStr, endStr) {
   if (!startStr || !endStr) return 0;
-  function toMin(t) {
-    const p = t.split(':').map(Number);
-    return p.length >= 2 ? p[0] * 60 + p[1] : 0;
-  }
-  const start = toMin(startStr), end = toMin(endStr);
-  let diff = end - start;
+  function toMin(t) { const p = t.split(':').map(Number); return p[0]*60+(p[1]||0); }
+  const startMin = toMin(startStr);
+  const endMin   = toMin(endStr);
+  const overnight = endMin < startMin;
+
+  // Minutos brutos do turno (overnight: soma 24h ao fim)
+  let diff = overnight ? (endMin + 1440) - startMin : endMin - startMin;
   if (diff <= 0) return 0;
-  const lunchStart = 12 * 60, lunchEnd = 13 * 60;
-  if (end > lunchStart && start < lunchEnd)
-    diff -= Math.min(end, lunchEnd) - Math.max(start, lunchStart);
+
+  // 15 min de água/banheiro — sempre descontado
+  diff -= 15;
+
+  // 1h de almoço — só desconta se o turno cruzar 12:00–13:00
+  // Para turno noturno, normaliza os minutos para verificar sobreposição
+  const almocoStart = 12 * 60; // 720
+  const almocoEnd   = 13 * 60; // 780
+  if (!overnight) {
+    // Turno diurno: sobreposição direta
+    if (endMin > almocoStart && startMin < almocoEnd)
+      diff -= Math.min(endMin, almocoEnd) - Math.max(startMin, almocoStart);
+  } else {
+    // Turno noturno: só cruza 12h–13h se o fim (no dia seguinte) passar de 12h
+    // ex: 22h–13h cruzaria; 22h–07h não cruza
+    if (endMin > almocoStart)
+      diff -= Math.min(endMin, almocoEnd) - almocoStart;
+  }
+
   return Math.max(diff, 0);
 }
 
@@ -151,7 +109,12 @@ function calcularPrevisto(cycleMin, trocaMin, startStr, endStr, statusAccSec) {
   if (cicloTotal <= 0) return 0;
   const turnoTotal = minutosDisponiveis(startStr, endStr);
   if (turnoTotal <= 0) return 0;
-  const parado = ((statusAccSec?.setup || 0) + (statusAccSec?.manutencao || 0)) / 60;
+  // Descontos variáveis: setup + manutenção + produção parada (pausa)
+  const parado = (
+    (statusAccSec?.setup      || 0) +
+    (statusAccSec?.manutencao || 0) +
+    (statusAccSec?.pausa      || 0)
+  ) / 60;
   return Math.floor(Math.max(turnoTotal - parado, 0) / cicloTotal);
 }
 
@@ -368,13 +331,6 @@ function criarCard(m) {
     timer:          null
   };
 
-  // Badge do banco de ciclos — criado dinamicamente abaixo do campo Peça
-  const bancoBadge = document.createElement('div');
-  bancoBadge.style.display = 'none';
-  bancoBadge.className = 'banco-badge';
-  c.processInput.parentNode.appendChild(bancoBadge);
-  c.bancoBadge = bancoBadge;
-
   c.title.textContent     = m.id;
   c.subtitle.textContent  = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
   c.operatorInput.value   = m.operator;
@@ -386,11 +342,6 @@ function criarCard(m) {
   c.producedInput.value   = m.produced != null ? m.produced : '';
   c.observacaoInput.value = m.observacao || '';
   c.predictedEl.textContent = m.predicted ?? 0;
-
-  // Auto-preencher ciclo ao sair do campo Peça
-  c.processInput.addEventListener('blur', () => checarEPreencherCiclo(c, m.id));
-  // Também verifica ao carregar se já há peça preenchida
-  if (m.process) setTimeout(() => checarEPreencherCiclo(c, m.id), 800);
 
   applyStatusVisual(c, m);
   applyBtnPausar(c, m);
@@ -409,48 +360,47 @@ function criarCard(m) {
   renderHistory(c, m);
   renderFuture(c, m);
 
-        c.timer = setInterval(() => {
-    // Para o cronômetro quando o turno encerrar
-    const agora = new Date();
+  // ── Função auxiliar: verifica se o turno atual está ativo ──────────
+  function turnoAtivo() {
+    const agora    = new Date();
     const agoraMin = agora.getHours() * 60 + agora.getMinutes();
-    const [eh, em] = (m.endTime || '16:45').split(':').map(Number);
-    if (agoraMin >= eh * 60 + em) {
-      clearInterval(c.timer);
-      c.timer = null;
-      // Garante que o status ativo acumule o tempo até o fim do turno
-      if (m.statusChangedAt && !m.statusPaused) {
-        const extra = Math.floor((serverNow() - m.statusChangedAt) / 1000);
-        m.statusAccSec[m.status] = (m.statusAccSec[m.status] || 0) + extra;
-        m.statusChangedAt = null;
-        REF.child(m.id).update({ statusAccSec: m.statusAccSec, statusChangedAt: null });
-      }
-      if (m.pausaChangedAt) {
-        const extra = Math.floor((serverNow() - m.pausaChangedAt) / 1000);
-        m.pausaAccSec = (m.pausaAccSec || 0) + extra;
-        m.pausaChangedAt = null;
-        REF.child(m.id).update({ pausaAccSec: m.pausaAccSec, pausaChangedAt: null });
-      }
-      return;
+    const [sh, sm] = (m.startTime || '07:00').split(':').map(Number);
+    const [eh, em] = (m.endTime   || '16:45').split(':').map(Number);
+    const startMin = sh*60+sm, endMin = eh*60+em;
+    const overnight = endMin < startMin;
+    if (overnight) {
+      // Ativo entre startMin..23:59 OU 00:00..endMin
+      return agoraMin >= startMin || agoraMin < endMin;
     }
+    return agoraMin >= startMin && agoraMin < endMin;
+  }
 
-    const secSetup = getLiveStatusSec(m, 'setup');
-    const secManut = getLiveStatusSec(m, 'manutencao');
-    const secPausa = getLivePausaSec(m);
+  // ── Inicializa (ou reinicia) o timer do card ─────────────────────
+  function iniciarTimer() {
+    if (c.timer) clearInterval(c.timer);
+    c.timer = setInterval(() => {
+      // Cronômetros de status contam SEMPRE, independente do turno
+      const secSetup = getLiveStatusSec(m, 'setup');
+      const secManut = getLiveStatusSec(m, 'manutencao');
+      const secPausa = getLivePausaSec(m);
 
-    c.elSetup.textContent = formatSeconds(secSetup);
-    c.elManut.textContent = formatSeconds(secManut);
-    c.paradaDisplay.textContent = formatSeconds(secSetup + secManut + secPausa);
+      c.elSetup.textContent       = formatSeconds(secSetup);
+      c.elManut.textContent       = formatSeconds(secManut);
+      c.paradaDisplay.textContent = formatSeconds(secSetup + secManut + secPausa);
 
-    const novo = calcularPrevisto(
-      m.cycleMin, m.trocaMin, m.startTime, m.endTime,
-      { setup: secSetup, manutencao: secManut }
-    );
-    if (novo !== m.predicted) {
-      m.predicted = novo;
-      c.predictedEl.textContent = novo;
-      atualizarGrafico(c, m);
-    }
-  }, 1000);
+      // Previsto sempre calculado com base nos tempos do turno
+      const novo = calcularPrevisto(m.cycleMin, m.trocaMin, m.startTime, m.endTime,
+        { setup: secSetup, manutencao: secManut, pausa: secPausa });
+
+      if (novo !== m.predicted) {
+        m.predicted = novo;
+        c.predictedEl.textContent = novo;
+        atualizarGrafico(c, m);
+      }
+    }, 1000);
+  }
+
+  iniciarTimer();
 
   
   function mudarStatus(novo) {
@@ -467,9 +417,11 @@ function criarCard(m) {
     }
     m.status          = novo;
     m.statusPaused    = false;
-    m.statusChangedAt = serverNow(); // aproximação local; Firebase corrige com timestamp exato
+    m.statusChangedAt = serverNow();
     applyStatusVisual(c, m);
     applyBtnPausar(c, m);
+    // Garante que o timer está rodando (pode ter sido interrompido)
+    iniciarTimer();
     REF.child(m.id).update({
       status:          novo,
       statusPaused:    false,
@@ -524,12 +476,18 @@ function criarCard(m) {
 
   c.btnZerar.addEventListener('click', () => {
     if (!confirm(`Zerar todos os tempos de ${m.id}? (Use ao trocar de peça)`)) return;
-    m.statusAccSec   = { producao: 0, setup: 0, manutencao: 0 };
-    m.pausaAccSec    = 0;
-    m.pausaChangedAt = null;
-    m.statusPaused   = false;
-    m.statusChangedAt = serverNow(); // aproximação local
+    m.statusAccSec    = { producao: 0, setup: 0, manutencao: 0 };
+    m.pausaAccSec     = 0;
+    m.pausaChangedAt  = null;
+    m.statusPaused    = false;
+    m.statusChangedAt = serverNow();
+    // Atualiza display imediatamente
+    c.elSetup.textContent       = '0:00';
+    c.elManut.textContent       = '0:00';
+    c.paradaDisplay.textContent = '0:00';
     applyBtnPausar(c, m);
+    // Reinicia o timer caso tenha sido destruído
+    iniciarTimer();
     REF.child(m.id).update({
       statusAccSec:    { setup: 0, manutencao: 0 },
       pausaAccSec:     0,
@@ -550,29 +508,6 @@ function criarCard(m) {
     m.produced   = c.producedInput.value.trim() === '' ? null : Number(c.producedInput.value.trim());
     c.subtitle.textContent = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
     REF.child(m.id).set(m);
-
-    // ── Banco de ciclos ──────────────────────────────────────────
-    if (m.process && m.cycleMin != null) {
-      const key  = cicloKey(m.id, m.process);
-      const safe = key.replace(/[.#$/[\]]/g, '_');
-      const existente = ciclosDB[safe];
-      const cicloDiferente = !existente ||
-        existente.cycleMin !== m.cycleMin ||
-        existente.trocaMin !== (m.trocaMin ?? null);
-
-      if (cicloDiferente) {
-        const cicloFmt = formatMinutesToMMSS(m.cycleMin);
-        const trocaFmt = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : 'sem troca';
-        const msg = existente
-          ? `Atualizar banco de ciclos?\n\nMáquina: ${m.id}\nPeça: ${m.process}\nCiclo: ${cicloFmt} · Troca: ${trocaFmt}`
-          : `Salvar ciclo no banco para uso futuro?\n\nMáquina: ${m.id}\nPeça: ${m.process}\nCiclo: ${cicloFmt} · Troca: ${trocaFmt}`;
-        if (confirm(msg)) {
-          salvarCicloNoBanco(m.id, m.process, m.cycleMin, m.trocaMin);
-          exibirBancoBadge(c, { cycleMin: m.cycleMin, trocaMin: m.trocaMin }, 'auto');
-        }
-      }
-    }
-    // ─────────────────────────────────────────────────────────────
   });
 
   c.addHistBtn.addEventListener('click', () => {
@@ -585,7 +520,7 @@ function criarCard(m) {
     const secManut    = getLiveStatusSec(m, 'manutencao');
     const secPausa    = getLivePausaSec(m);
     const predicted   = calcularPrevisto(cycleVal, trocaVal, startVal, endVal,
-      { setup: secSetup, manutencao: secManut });
+      { setup: secSetup, manutencao: secManut, pausa: secPausa });
     const efficiency  = (predicted > 0 && producedVal != null)
       ? ((producedVal / predicted) * 100).toFixed(1) : '-';
     if (!Array.isArray(m.history)) m.history = [];
