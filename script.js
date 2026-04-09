@@ -763,49 +763,76 @@ REF.on('value', snapshot => {
 });
 
 function exportCSV() {
-  const hoje    = new Date();
-  const dataFmt = hoje.toLocaleDateString('pt-BR');
-  const horaFmt = hoje.toLocaleTimeString('pt-BR');
-  const dataArq = dataFmt.replace(/\//g,'-');
+  const hoje   = new Date();
+  const dataArq = hoje.toLocaleDateString('pt-BR').replace(/\//g,'-');
 
-  const resumo = ['Data;Hora;Máquina;Operador;Processo;Ciclo (min);Troca (min);Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação;Processos Futuros'];
-  MACHINE_NAMES.forEach(name => {
-    const m = machines[name]; if (!m) return;
-    const ef  = m.predicted && m.produced!=null ? ((m.produced/m.predicted)*100).toFixed(1).replace('.',',') : '';
-    const fut = (Array.isArray(m.future)?m.future:[]).map((f,i)=>`${i+1}. ${f.name} [${f.priority}]`).join(' | ').replace(/;/g,',');
-    resumo.push([
-      dataFmt, horaFmt,
-      (m.id||'').replace(/;/g,','), (m.operator||'').replace(/;/g,','), (m.process||'').replace(/;/g,','),
-      m.cycleMin??'', m.trocaMin??'', m.startTime||'', m.endTime||'',
-      m.predicted??0, m.produced??'', ef, m.status||'',
-      formatSeconds(getLiveStatusSec(m,'setup')),
-      formatSeconds(getLiveStatusSec(m,'manutencao')),
-      formatSeconds(getLivePausaSec(m)),
-      (m.observacao||'').replace(/;/g,','), fut
-    ].join(';'));
-  });
-  baixarCSV('\uFEFF'+resumo.join('\n'), `producao_resumo_${dataArq}.csv`);
+  // Cabeçalho reorganizado: identificação → tempos de turno → resultados → paradas → obs
+  const cabecalho = [
+    'Data',
+    'Hora do Registro',
+    'Máquina',
+    'Operador',
+    'Peça / Processo',
+    'Turno Início',
+    'Turno Fim',
+    'Ciclo (mm:ss)',
+    'Troca (mm:ss)',
+    'Previsto (pçs)',
+    'Realizado (pçs)',
+    'Eficiência (%)',
+    'T. Setup (h:mm:ss)',
+    'T. Manutenção (h:mm:ss)',
+    'T. Pausa (h:mm:ss)',
+    'Status ao Registrar',
+    'Observação'
+  ].join(';');
 
-  const hist = ['Data Registro;Hora Registro;Máquina;Operador;Processo;Ciclo;Troca;Início;Fim;Previsto;Realizado;Eficiência (%);Status;T.Setup;T.Manutenção;T.Pausa;Observação'];
+  const linhas = [cabecalho];
+
+  const statusLabel = { producao: 'Produção', setup: 'Setup', manutencao: 'Manutenção' };
+
   MACHINE_NAMES.forEach(name => {
-    const m = machines[name]; if (!m) return;
-    (m.history||[]).forEach(h => {
-      const d = new Date(h.ts);
-      hist.push([
-        d.toLocaleDateString('pt-BR'), d.toLocaleTimeString('pt-BR'),
-        (m.id||'').replace(/;/g,','), (h.operator||'').replace(/;/g,','), (h.process||'').replace(/;/g,','),
-        h.cycleMin??'', h.trocaMin??'', h.startTime||'', h.endTime||'',
-        h.predicted??'', h.produced??'',
-        (h.efficiency??'').toString().replace('.',','), h.status||'',
-        formatSeconds(h.statusAccSec?.setup||0),
-        formatSeconds(h.statusAccSec?.manutencao||0),
-        formatSeconds(h.pausaAccSec||0),
-        (h.observacao||'').replace(/;/g,',')
+    const m = machines[name];
+    if (!m || !Array.isArray(m.history) || m.history.length === 0) return;
+
+    m.history.forEach(h => {
+      const d   = new Date(h.ts);
+      const ef  = (h.efficiency != null && h.efficiency !== '-')
+        ? h.efficiency.toString().replace('.', ',')
+        : '';
+
+      linhas.push([
+        d.toLocaleDateString('pt-BR'),
+        d.toLocaleTimeString('pt-BR'),
+        limpar(m.id),
+        limpar(h.operator || '-'),
+        limpar(h.process  || '-'),
+        h.startTime || '',
+        h.endTime   || '',
+        h.cycleMin  != null ? formatMinutesToMMSS(h.cycleMin) : '',
+        h.trocaMin  != null ? formatMinutesToMMSS(h.trocaMin) : '',
+        h.predicted ?? '',
+        h.produced  ?? '',
+        ef,
+        formatSeconds(h.statusAccSec?.setup      || 0),
+        formatSeconds(h.statusAccSec?.manutencao || 0),
+        formatSeconds(h.pausaAccSec || 0),
+        statusLabel[h.status] || h.status || '',
+        limpar(h.observacao || '')
       ].join(';'));
     });
   });
-  baixarCSV('\uFEFF'+hist.join('\n'), `producao_historico_${dataArq}.csv`);
+
+  if (linhas.length === 1) {
+    alert('Nenhum histórico registrado para exportar.');
+    return;
+  }
+
+  baixarCSV('\uFEFF' + linhas.join('\n'), `historico_producao_${dataArq}.csv`);
 }
+
+// Remove ponto-e-vírgula de campos de texto para não quebrar o CSV
+function limpar(str) { return String(str).replace(/;/g, ','); }
 
 function baixarCSV(content, filename) {
   const a = document.createElement('a');
