@@ -131,8 +131,8 @@ function minutosDisponiveis(startStr, endStr) {
   let diff = endMin - startMin;
   if (diff <= 0) return 0; // turno inválido ou de zero minutos
 
-  // Desconto fixo: 15 min de água/banheiro
-  diff -= 15;
+  // 15 min de água/banheiro — descontado uma única vez, só se o turno durar 4h ou mais
+  if (diff >= 240) diff -= 15;
 
   // Desconto de almoço proporcional: intersecção entre [start,end] e [12:00,13:00]
   const almocoStart = 720; // 12:00
