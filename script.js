@@ -14,8 +14,60 @@ firebase.initializeApp({
   appId: "1:677023128312:web:75376363a62105f360f90d"
 });
 
-const db  = firebase.database();
-const REF = db.ref('usinagem_dashboard_v18_6');
+const db         = firebase.database();
+const REF        = db.ref('usinagem_dashboard_v18_6');
+const CICLOS_REF = db.ref('usinagem_ciclos_banco'); // banco: máquina + peça → ciclo/troca
+
+// ── Cache local sincronizado em tempo real ─────────────────────
+let ciclosDB = {};
+CICLOS_REF.on('value', snap => { ciclosDB = snap.val() || {}; });
+
+// Chave segura: "Fresa CNC 1||flange 300"
+function cicloKey(machineId, process) {
+  return (machineId + '||' + process.trim().toLowerCase()).replace(/[.#$\/\[\]]/g, '_');
+}
+
+function salvarCicloNoBanco(machineId, process, cycleMin, trocaMin) {
+  CICLOS_REF.child(cicloKey(machineId, process)).set({
+    machineId, process,
+    cycleMin: cycleMin ?? null,
+    trocaMin: trocaMin ?? null,
+    updatedAt: Date.now()
+  });
+}
+
+function checarEPreencherCiclo(c, machineId) {
+  const processo = c.processInput.value.trim();
+  if (!processo) { ocultarBancoBadge(c); return; }
+  const dado = ciclosDB[cicloKey(machineId, processo)];
+  if (dado && (dado.cycleMin != null || dado.trocaMin != null)) {
+    const vazio = !c.cycleInput.value.trim() && !c.trocaInput.value.trim();
+    if (vazio) {
+      if (dado.cycleMin != null) c.cycleInput.value = formatMinutesToMMSS(dado.cycleMin);
+      if (dado.trocaMin != null) c.trocaInput.value = formatMinutesToMMSS(dado.trocaMin);
+      exibirBancoBadge(c, dado, 'auto');
+    } else {
+      exibirBancoBadge(c, dado, 'info');
+    }
+  } else {
+    ocultarBancoBadge(c);
+  }
+}
+
+function exibirBancoBadge(c, dado, modo) {
+  if (!c.bancoBadge) return;
+  const ct = dado.cycleMin != null ? formatMinutesToMMSS(dado.cycleMin) : '-';
+  const tt = dado.trocaMin != null ? formatMinutesToMMSS(dado.trocaMin) : '-';
+  c.bancoBadge.textContent = modo === 'auto'
+    ? '✅ Ciclo do banco: ' + ct + ' · Troca: ' + tt
+    : '💡 Banco: ciclo ' + ct + ' · troca ' + tt;
+  c.bancoBadge.className = 'banco-badge banco-badge-' + (modo === 'auto' ? 'ok' : 'info');
+  c.bancoBadge.style.display = 'flex';
+}
+
+function ocultarBancoBadge(c) {
+  if (c.bancoBadge) c.bancoBadge.style.display = 'none';
+}
 
 // server time offset keeps all devices in sync
 let serverTimeOffset = 0;
@@ -65,39 +117,29 @@ function formatSeconds(totalSec) {
   return `${m}:${String(s).padStart(2,'0')}`;
 }
 
-function isOvernightShift(startStr, endStr) {
-  if (!startStr || !endStr) return false;
-  function toMin(t) { const p = t.split(':').map(Number); return p[0]*60+(p[1]||0); }
-  return toMin(endStr) < toMin(startStr);
-}
-
 function minutosDisponiveis(startStr, endStr) {
+  // Calcula minutos produtivos disponíveis no turno diurno.
+  // Descontos fixos:
+  //   • 15 min — água e banheiro (sempre)
+  //   • até 60 min — almoço 12:00–13:00 (só se o turno cruzar esse horário,
+  //                  proporcional caso o turno comece ou termine dentro do intervalo)
   if (!startStr || !endStr) return 0;
   function toMin(t) { const p = t.split(':').map(Number); return p[0]*60+(p[1]||0); }
   const startMin = toMin(startStr);
   const endMin   = toMin(endStr);
-  const overnight = endMin < startMin;
 
-  // Minutos brutos do turno (overnight: soma 24h ao fim)
-  let diff = overnight ? (endMin + 1440) - startMin : endMin - startMin;
-  if (diff <= 0) return 0;
+  let diff = endMin - startMin;
+  if (diff <= 0) return 0; // turno inválido ou de zero minutos
 
-  // 15 min de água/banheiro — sempre descontado
+  // Desconto fixo: 15 min de água/banheiro
   diff -= 15;
 
-  // 1h de almoço — só desconta se o turno cruzar 12:00–13:00
-  // Para turno noturno, normaliza os minutos para verificar sobreposição
-  const almocoStart = 12 * 60; // 720
-  const almocoEnd   = 13 * 60; // 780
-  if (!overnight) {
-    // Turno diurno: sobreposição direta
-    if (endMin > almocoStart && startMin < almocoEnd)
-      diff -= Math.min(endMin, almocoEnd) - Math.max(startMin, almocoStart);
-  } else {
-    // Turno noturno: só cruza 12h–13h se o fim (no dia seguinte) passar de 12h
-    // ex: 22h–13h cruzaria; 22h–07h não cruza
-    if (endMin > almocoStart)
-      diff -= Math.min(endMin, almocoEnd) - almocoStart;
+  // Desconto de almoço proporcional: intersecção entre [start,end] e [12:00,13:00]
+  const almocoStart = 720; // 12:00
+  const almocoEnd   = 780; // 13:00
+  if (endMin > almocoStart && startMin < almocoEnd) {
+    const intersecao = Math.min(endMin, almocoEnd) - Math.max(startMin, almocoStart);
+    diff -= intersecao; // pode ser menos de 60 min se o turno começar/terminar no meio
   }
 
   return Math.max(diff, 0);
@@ -343,6 +385,17 @@ function criarCard(m) {
   c.observacaoInput.value = m.observacao || '';
   c.predictedEl.textContent = m.predicted ?? 0;
 
+  // Badge do banco de ciclos — injetado abaixo do campo Peça
+  const bancoBadge = document.createElement('div');
+  bancoBadge.style.display = 'none';
+  c.processInput.parentNode.appendChild(bancoBadge);
+  c.bancoBadge = bancoBadge;
+
+  // Ao sair do campo Peça: busca no banco e preenche se vazio
+  c.processInput.addEventListener('blur', () => checarEPreencherCiclo(c, m.id));
+  // Ao carregar card com peça já preenchida: verifica após 800ms (banco ainda carregando)
+  if (m.process) setTimeout(() => checarEPreencherCiclo(c, m.id), 800);
+
   applyStatusVisual(c, m);
   applyBtnPausar(c, m);
 
@@ -360,19 +413,13 @@ function criarCard(m) {
   renderHistory(c, m);
   renderFuture(c, m);
 
-  // ── Função auxiliar: verifica se o turno atual está ativo ──────────
+  // ── Verifica se o horário atual está dentro do turno diurno ───────
   function turnoAtivo() {
     const agora    = new Date();
     const agoraMin = agora.getHours() * 60 + agora.getMinutes();
     const [sh, sm] = (m.startTime || '07:00').split(':').map(Number);
     const [eh, em] = (m.endTime   || '16:45').split(':').map(Number);
-    const startMin = sh*60+sm, endMin = eh*60+em;
-    const overnight = endMin < startMin;
-    if (overnight) {
-      // Ativo entre startMin..23:59 OU 00:00..endMin
-      return agoraMin >= startMin || agoraMin < endMin;
-    }
-    return agoraMin >= startMin && agoraMin < endMin;
+    return agoraMin >= sh*60+sm && agoraMin < eh*60+em;
   }
 
   // ── Inicializa (ou reinicia) o timer do card ─────────────────────
@@ -508,6 +555,25 @@ function criarCard(m) {
     m.produced   = c.producedInput.value.trim() === '' ? null : Number(c.producedInput.value.trim());
     c.subtitle.textContent = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
     REF.child(m.id).set(m);
+
+    // ── Banco de ciclos: oferece salvar se houver peça + ciclo ─────
+    if (m.process && m.cycleMin != null) {
+      const chave     = cicloKey(m.id, m.process);
+      const existente = ciclosDB[chave];
+      const diferente = !existente
+        || existente.cycleMin !== m.cycleMin
+        || existente.trocaMin !== (m.trocaMin ?? null);
+      if (diferente) {
+        const ct  = formatMinutesToMMSS(m.cycleMin);
+        const tt  = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : 'sem troca';
+        const acao = existente ? 'Atualizar' : 'Salvar';
+        if (confirm(acao + ' ciclo no banco?\n\nMáquina: ' + m.id + '\nPeça: ' + m.process + '\nCiclo: ' + ct + '  Troca: ' + tt)) {
+          salvarCicloNoBanco(m.id, m.process, m.cycleMin, m.trocaMin);
+          exibirBancoBadge(c, { cycleMin: m.cycleMin, trocaMin: m.trocaMin }, 'auto');
+        }
+      }
+    }
+    // ──────────────────────────────────────────────────────────────
   });
 
   c.addHistBtn.addEventListener('click', () => {
