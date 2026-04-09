@@ -145,7 +145,6 @@ select:focus,
   }
 }
 
-/* ── Banco de Ciclos badge ───────────────────────────── */
 .banco-badge {
   display: none;
   align-items: center;
@@ -164,7 +163,6 @@ select:focus,
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Ciclo preenchido automaticamente */
 .banco-badge-ok {
   background: rgba(21, 128, 61, 0.18);
   color: #4ade80;
