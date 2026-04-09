@@ -118,28 +118,40 @@ function formatSeconds(totalSec) {
 }
 
 function minutosDisponiveis(startStr, endStr) {
-  // Calcula minutos produtivos disponíveis no turno diurno.
-  // Descontos fixos:
-  //   • 15 min — água e banheiro (sempre)
-  //   • até 60 min — almoço 12:00–13:00 (só se o turno cruzar esse horário,
-  //                  proporcional caso o turno comece ou termine dentro do intervalo)
+  // Suporta turno diurno e noturno (overnight).
+  // Descontos:
+  //   • 15 min  — água/banheiro, se turno >= 4h
+  //   • até 60 min — intervalo proporcional:
+  //       Diurno:  12:00–13:00
+  //       Noturno: 02:00–03:00
   if (!startStr || !endStr) return 0;
   function toMin(t) { const p = t.split(':').map(Number); return p[0]*60+(p[1]||0); }
   const startMin = toMin(startStr);
   const endMin   = toMin(endStr);
+  const overnight = endMin < startMin;
 
-  let diff = endMin - startMin;
-  if (diff <= 0) return 0; // turno inválido ou de zero minutos
+  // Minutos brutos (overnight: soma 24h ao fim)
+  let diff = overnight ? (endMin + 1440) - startMin : endMin - startMin;
+  if (diff <= 0) return 0;
 
-  // 15 min de água/banheiro — descontado uma única vez, só se o turno durar 4h ou mais
+  // 15 min de água/banheiro — só se turno >= 4h
   if (diff >= 240) diff -= 15;
 
-  // Desconto de almoço proporcional: intersecção entre [start,end] e [12:00,13:00]
-  const almocoStart = 720; // 12:00
-  const almocoEnd   = 780; // 13:00
-  if (endMin > almocoStart && startMin < almocoEnd) {
-    const intersecao = Math.min(endMin, almocoEnd) - Math.max(startMin, almocoStart);
-    diff -= intersecao; // pode ser menos de 60 min se o turno começar/terminar no meio
+  if (!overnight) {
+    // Turno diurno — intervalo 12:00–13:00
+    const iS = 720, iE = 780;
+    if (endMin > iS && startMin < iE)
+      diff -= Math.min(endMin, iE) - Math.max(startMin, iS);
+  } else {
+    // Turno noturno — intervalo 02:00–03:00
+    // O turno cruza meia-noite, então normalizamos verificando dois segmentos:
+    // Segmento A: startMin → 1440 (fim do dia)
+    // Segmento B: 0 → endMin (início do dia seguinte)
+    const iS = 120, iE = 180; // 02:00–03:00
+    // Interseção com segmento B (0–endMin), onde o intervalo 02–03 sempre estará
+    if (endMin > iS) {
+      diff -= Math.min(endMin, iE) - Math.max(0, iS);
+    }
   }
 
   return Math.max(diff, 0);
