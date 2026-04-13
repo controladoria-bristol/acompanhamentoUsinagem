@@ -2,7 +2,7 @@ const MACHINE_NAMES = [
   'Fresa CNC 1','Fresa CNC 2','Fresa CNC 3','Robodrill 2','D 800-1','Fagor',
   'Robodrill 1','VTC','D 800-2','D 800-3','Centur','Nardine','GL 280',
   '15S','E 280','G 240','Galaxy 10A','Galaxy 10B','GL 170G','GL 250','GL 350','GL 450','Torno Convencional','Fresa 1A','Fresa 1B','Fresa 2A','Fresa 2B',
-  'Torno Pontear','Fellows 1','Fellows 2','Brochadeira','Eletroerosão'
+  'Torno Pontear','Fellows 1','Fellows 2','Brochadeira','Eletroerosão',' Gravadora'
 ];
 
 firebase.initializeApp({
