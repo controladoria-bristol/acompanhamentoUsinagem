@@ -1,30 +1,189 @@
 const MACHINE_NAMES = [
   'Fresa CNC 1','Fresa CNC 2','Fresa CNC 3','Robodrill 2','D 800-1','Fagor',
   'Robodrill 1','VTC','D 800-2','D 800-3','Centur','Nardine','GL 280',
-  '15S','E 280','G 240','Galaxy 10A','Galaxy 10B','GL 170G','GL 250','GL 350','GL 450','Torno Convencional','Fresa 1A','Fresa 1B','Fresa 2A','Fresa 2B',
-  'Torno Pontear','Fellows 1','Fellows 2','Brochadeira','Eletroerosão',' Gravadora'
+  '15S','E 280','G 240','Galaxy 10A','Galaxy 10B','GL 170G','GL 250','GL 350','GL 450',
+  'Torno Convencional','Fresa 1A','Fresa 1B','Fresa 2A','Fresa 2B',
+  'Torno Pontear','Fellows 1','Fellows 2','Brochadeira','Eletroerosão','Gravadora'
 ];
 
 firebase.initializeApp({
-  apiKey: "AIzaSyBtJ5bhKoYsG4Ht57yxJ-69fvvbVCVPGjI",
-  authDomain: "dashboardusinagem.firebaseapp.com",
-  projectId: "dashboardusinagem",
-  storageBucket: "dashboardusinagem.appspot.com",
-  messagingSenderId: "677023128312",
-  appId: "1:677023128312:web:75376363a62105f360f90d"
+  apiKey:            'AIzaSyBtJ5bhKoYsG4Ht57yxJ-69fvvbVCVPGjI',
+  authDomain:        'dashboardusinagem.firebaseapp.com',
+  projectId:         'dashboardusinagem',
+  storageBucket:     'dashboardusinagem.appspot.com',
+  messagingSenderId: '677023128312',
+  appId:             '1:677023128312:web:75376363a62105f360f90d'
 });
 
-const db         = firebase.database();
-const REF        = db.ref('usinagem_dashboard_v18_6');
-const CICLOS_REF = db.ref('usinagem_ciclos_banco'); // banco: máquina + peça → ciclo/troca
+const db        = firebase.database();
+const REF       = db.ref('usinagem_dashboard_v18_6');
+const CICLOS_REF = db.ref('usinagem_ciclos_banco');
 
-// ── Cache local sincronizado em tempo real ─────────────────────
 let ciclosDB = {};
 CICLOS_REF.on('value', snap => { ciclosDB = snap.val() || {}; });
 
-// Chave segura: "Fresa CNC 1||flange 300"
+let serverTimeOffset = 0;
+db.ref('.info/serverTimeOffset').on('value', snap => { serverTimeOffset = snap.val() || 0; });
+
+const machines = {};
+const cards    = {};
+
+let primeiraCarrega = true;
+let prevSnapshot    = {};
+
+const STATUS_CONFIG = {
+  producao:   { label: '🟢 Produção',   badgeClass: 'status-badge-producao',   cardClass: 'card-status-producao'   },
+  setup:      { label: '🟡 Setup',      badgeClass: 'status-badge-setup',      cardClass: 'card-status-setup'      },
+  manutencao: { label: '🔴 Manutenção', badgeClass: 'status-badge-manutencao', cardClass: 'card-status-manutencao' }
+};
+
+
+function serverNow() {
+  return Date.now() + serverTimeOffset;
+}
+
 function cicloKey(machineId, process) {
   return (machineId + '||' + process.trim().toLowerCase()).replace(/[.#$\/\[\]]/g, '_');
+}
+
+function parseTempoMinutos(str) {
+  if (!str) return 0;
+  const s = String(str).trim();
+  if (s.includes(':')) {
+    const parts = s.split(':').map(Number);
+    if (parts.length === 3) return parts[0] * 60 + parts[1] + parts[2] / 60;
+    if (parts.length === 2) return parts[0] + parts[1] / 60;
+  }
+  const v = Number(s.replace(',', '.'));
+  return isNaN(v) ? 0 : v;
+}
+
+function formatMinutesToMMSS(minFloat) {
+  if (!minFloat || isNaN(minFloat)) return '-';
+  const totalSeconds = Math.round(minFloat * 60);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function formatSeconds(totalSec) {
+  if (!totalSec || totalSec < 0) return '0:00';
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function limpar(str) {
+  return String(str).replace(/;/g, ',');
+}
+
+function minutosDisponiveis(startStr, endStr) {
+  if (!startStr || !endStr) return 0;
+  function toMin(t) { const p = t.split(':').map(Number); return p[0]*60+(p[1]||0); }
+  const startMin = toMin(startStr);
+  const endMin   = toMin(endStr);
+  const overnight = endMin < startMin;
+  let diff = overnight ? (endMin + 1440) - startMin : endMin - startMin;
+  if (diff <= 0) return 0;
+  if (diff >= 240) diff -= 15;
+  if (!overnight) {
+    const iS = 720, iE = 780;
+    if (endMin > iS && startMin < iE)
+      diff -= Math.min(endMin, iE) - Math.max(startMin, iS);
+  } else {
+    const iS = 120, iE = 180;
+    if (endMin > iS) {
+      diff -= Math.min(endMin, iE) - Math.max(0, iS);
+    }
+  }
+  return Math.max(diff, 0);
+}
+
+function calcularPrevisto(cycleMin, trocaMin, startStr, endStr, statusAccSec) {
+  if (!cycleMin || cycleMin <= 0) return 0;
+  const cicloTotal = cycleMin + (trocaMin || 0);
+  if (cicloTotal <= 0) return 0;
+  const turnoTotal = minutosDisponiveis(startStr, endStr);
+  if (turnoTotal <= 0) return 0;
+  const parado = (
+    (statusAccSec?.setup      || 0) +
+    (statusAccSec?.manutencao || 0) +
+    (statusAccSec?.pausa      || 0)
+  ) / 60;
+  return Math.floor(Math.max(turnoTotal - parado, 0) / cicloTotal);
+}
+
+function getLiveStatusSec(m, key) {
+  const acc = m.statusAccSec[key] || 0;
+  if (m.statusPaused) return acc;
+  if (m.status === key && m.statusChangedAt)
+    return acc + Math.floor((serverNow() - m.statusChangedAt) / 1000);
+  return acc;
+}
+
+function getLivePausaSec(m) {
+  const acc = m.pausaAccSec || 0;
+  if (m.pausaChangedAt)
+    return acc + Math.floor((serverNow() - m.pausaChangedAt) / 1000);
+  return acc;
+}
+
+function machineDefault(name) {
+  return {
+    id: name,
+    operator: '', process: '',
+    cycleMin: null, setupMin: 0, trocaMin: null,
+    observacao: '',
+    startTime: '07:00', endTime: '16:45',
+    produced: null, predicted: 0,
+    history: [], future: [],
+    status: 'producao',
+    statusChangedAt: null,
+    statusPaused: false,
+    statusAccSec: { setup: 0, manutencao: 0 },
+    pausaAccSec: 0,
+    pausaChangedAt: null
+  };
+}
+
+function rawToMachine(name, raw) {
+  return {
+    id:              name,
+    operator:        raw.operator   || '',
+    process:         raw.process    || '',
+    cycleMin:        raw.cycleMin   ?? null,
+    setupMin:        raw.setupMin   ?? 0,
+    trocaMin:        raw.trocaMin   ?? null,
+    observacao:      raw.observacao ?? '',
+    startTime:       raw.startTime  || '07:00',
+    endTime:         raw.endTime    || '16:45',
+    produced:        raw.produced   ?? null,
+    predicted:       raw.predicted  ?? 0,
+    history:         Array.isArray(raw.history) ? raw.history : [],
+    future:          Array.isArray(raw.future)  ? raw.future  : [],
+    status:          raw.status          || 'producao',
+    statusChangedAt: raw.statusChangedAt || null,
+    statusPaused:    raw.statusPaused    || false,
+    statusAccSec: {
+      setup:      raw.statusAccSec?.setup      || 0,
+      manutencao: raw.statusAccSec?.manutencao || 0
+    },
+    pausaAccSec:    raw.pausaAccSec    || 0,
+    pausaChangedAt: raw.pausaChangedAt || null
+  };
+}
+
+
+function notificar(titulo, mensagem) {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    new Notification(titulo, {
+      body: mensagem,
+      icon: 'https://cdn-icons-png.flaticon.com/512/1827/1827272.png'
+    });
+  }
 }
 
 function salvarCicloNoBanco(machineId, process, cycleMin, trocaMin) {
@@ -61,7 +220,7 @@ function exibirBancoBadge(c, dado, modo) {
   c.bancoBadge.textContent = modo === 'auto'
     ? '✅ Ciclo do banco: ' + ct + ' · Troca: ' + tt
     : '💡 Banco: ciclo ' + ct + ' · troca ' + tt;
-  c.bancoBadge.className = 'banco-badge banco-badge-' + (modo === 'auto' ? 'ok' : 'info');
+  c.bancoBadge.className   = 'banco-badge banco-badge-' + (modo === 'auto' ? 'ok' : 'info');
   c.bancoBadge.style.display = 'flex';
 }
 
@@ -69,182 +228,6 @@ function ocultarBancoBadge(c) {
   if (c.bancoBadge) c.bancoBadge.style.display = 'none';
 }
 
-// server time offset keeps all devices in sync
-let serverTimeOffset = 0;
-db.ref('.info/serverTimeOffset').on('value', snap => {
-  serverTimeOffset = snap.val() || 0;
-});
-function serverNow() {
-  return Date.now() + serverTimeOffset;
-}
-
-function notificar(titulo, mensagem) {
-  if (!("Notification" in window)) return;
-  if (Notification.permission === "granted") {
-    new Notification(titulo, {
-      body: mensagem,
-      icon: "https://cdn-icons-png.flaticon.com/512/1827/1827272.png"
-    });
-  }
-}
-
-function parseTempoMinutos(str) {
-  if (!str) return 0;
-  const s = String(str).trim();
-  if (s.includes(':')) {
-    const parts = s.split(':').map(Number);
-    if (parts.length === 3) return parts[0] * 60 + parts[1] + parts[2] / 60;
-    if (parts.length === 2) return parts[0] + parts[1] / 60;
-  }
-  const v = Number(s.replace(',', '.'));
-  return isNaN(v) ? 0 : v;
-}
-
-function formatMinutesToMMSS(minFloat) {
-  if (!minFloat || isNaN(minFloat)) return '-';
-  const totalSeconds = Math.round(minFloat * 60);
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-function formatSeconds(totalSec) {
-  if (!totalSec || totalSec < 0) return '0:00';
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  return `${m}:${String(s).padStart(2,'0')}`;
-}
-
-function minutosDisponiveis(startStr, endStr) {
-  // Suporta turno diurno e noturno (overnight).
-  // Descontos:
-  //   • 15 min  — água/banheiro, se turno >= 4h
-  //   • até 60 min — intervalo proporcional:
-  //       Diurno:  12:00–13:00
-  //       Noturno: 02:00–03:00
-  if (!startStr || !endStr) return 0;
-  function toMin(t) { const p = t.split(':').map(Number); return p[0]*60+(p[1]||0); }
-  const startMin = toMin(startStr);
-  const endMin   = toMin(endStr);
-  const overnight = endMin < startMin;
-
-  // Minutos brutos (overnight: soma 24h ao fim)
-  let diff = overnight ? (endMin + 1440) - startMin : endMin - startMin;
-  if (diff <= 0) return 0;
-
-  // 15 min de água/banheiro — só se turno >= 4h
-  if (diff >= 240) diff -= 15;
-
-  if (!overnight) {
-    // Turno diurno — intervalo 12:00–13:00
-    const iS = 720, iE = 780;
-    if (endMin > iS && startMin < iE)
-      diff -= Math.min(endMin, iE) - Math.max(startMin, iS);
-  } else {
-    // Turno noturno — intervalo 02:00–03:00
-    // O turno cruza meia-noite, então normalizamos verificando dois segmentos:
-    // Segmento A: startMin → 1440 (fim do dia)
-    // Segmento B: 0 → endMin (início do dia seguinte)
-    const iS = 120, iE = 180; // 02:00–03:00
-    // Interseção com segmento B (0–endMin), onde o intervalo 02–03 sempre estará
-    if (endMin > iS) {
-      diff -= Math.min(endMin, iE) - Math.max(0, iS);
-    }
-  }
-
-  return Math.max(diff, 0);
-}
-
-function calcularPrevisto(cycleMin, trocaMin, startStr, endStr, statusAccSec) {
-  if (!cycleMin || cycleMin <= 0) return 0;
-  const cicloTotal = cycleMin + (trocaMin || 0);
-  if (cicloTotal <= 0) return 0;
-  const turnoTotal = minutosDisponiveis(startStr, endStr);
-  if (turnoTotal <= 0) return 0;
-  // Descontos variáveis: setup + manutenção + produção parada (pausa)
-  const parado = (
-    (statusAccSec?.setup      || 0) +
-    (statusAccSec?.manutencao || 0) +
-    (statusAccSec?.pausa      || 0)
-  ) / 60;
-  return Math.floor(Math.max(turnoTotal - parado, 0) / cicloTotal);
-}
-
-//  LEITURA AO VIVO DOS CRONÔMETROS
-//  Usa serverNow() — mesmo resultado em todos os dispositivos
-function getLiveStatusSec(m, key) {
-  const acc = m.statusAccSec[key] || 0;
-  if (m.statusPaused) return acc;
-  if (m.status === key && m.statusChangedAt)
-    return acc + Math.floor((serverNow() - m.statusChangedAt) / 1000);
-  return acc;
-}
-
-function getLivePausaSec(m) {
-  const acc = m.pausaAccSec || 0;
-  if (m.pausaChangedAt)
-    return acc + Math.floor((serverNow() - m.pausaChangedAt) / 1000);
-  return acc;
-}
-
-//  STATE CENTRAL
-//  machines: dados de cada máquina
-//  cards:    referências DOM de cada card (criado só 1 vez)
-const machines = {};  // { [id]: dadosDaMaquina }
-const cards    = {};  // { [id]: { dom refs, chart, timer } }
-
-function machineDefault(name) {
-  return {
-    id: name,
-    operator: '', process: '',
-    cycleMin: null, setupMin: 0, trocaMin: null,
-    observacao: '',
-    startTime: '07:00', endTime: '16:45',
-    produced: null, predicted: 0,
-    history: [], future: [],
-    status: 'producao',
-    statusChangedAt: null,
-    statusPaused: false,
-    statusAccSec: { setup: 0, manutencao: 0 },
-    pausaAccSec: 0,
-    pausaChangedAt: null
-  };
-}
-
-function rawToMachine(name, raw) {
-  return {
-    id:        name,
-    operator:  raw.operator   || '',
-    process:   raw.process    || '',
-    cycleMin:  raw.cycleMin   ?? null,
-    setupMin:  raw.setupMin   ?? 0,
-    trocaMin:  raw.trocaMin   ?? null,
-    observacao:raw.observacao ?? '',
-    startTime: raw.startTime  || '07:00',
-    endTime:   raw.endTime    || '16:45',
-    produced:  raw.produced   ?? null,
-    predicted: raw.predicted  ?? 0,
-    history:   Array.isArray(raw.history) ? raw.history : [],
-    future:    Array.isArray(raw.future)  ? raw.future  : [],
-    status:          raw.status          || 'producao',
-    statusChangedAt: raw.statusChangedAt || null,
-    statusPaused:    raw.statusPaused    || false,
-    statusAccSec: {
-      setup:      raw.statusAccSec?.setup      || 0,
-      manutencao: raw.statusAccSec?.manutencao || 0
-    },
-    pausaAccSec:    raw.pausaAccSec    || 0,
-    pausaChangedAt: raw.pausaChangedAt || null
-  };
-}
-
-const STATUS_CONFIG = {
-  producao:   { label: '🟢 Produção',   badgeClass: 'status-badge-producao',   cardClass: 'card-status-producao'   },
-  setup:      { label: '🟡 Setup',      badgeClass: 'status-badge-setup',      cardClass: 'card-status-setup'      },
-  manutencao: { label: '🔴 Manutenção', badgeClass: 'status-badge-manutencao', cardClass: 'card-status-manutencao' }
-};
 
 function applyStatusVisual(c, m) {
   const cfg = STATUS_CONFIG[m.status];
@@ -253,50 +236,51 @@ function applyStatusVisual(c, m) {
   c.statusBadge.className   = `status-badge ${cfg.badgeClass}`;
   c.statusBadge.textContent = m.statusPaused ? '⏸ Pausado' : cfg.label;
   ['btnProducao','btnSetup','btnManutencao'].forEach(r => c[r] && c[r].classList.remove('active-chip'));
-  const map = { producao:'btnProducao', setup:'btnSetup', manutencao:'btnManutencao' };
+  const map = { producao: 'btnProducao', setup: 'btnSetup', manutencao: 'btnManutencao' };
   if (c[map[m.status]]) c[map[m.status]].classList.add('active-chip');
 }
 
 function applyBtnPausar(c, m) {
   const pausado = m.statusPaused || m.pausaChangedAt !== null;
   c.btnPausar.textContent = pausado ? '▶ Retomar' : '⏸ Pausar';
-  c.btnPausar.classList.toggle('bg-yellow-600', pausado);
-  c.btnPausar.classList.toggle('bg-gray-600',  !pausado);
+  c.btnPausar.classList.toggle('btn-pausar-active',   pausado);
+  c.btnPausar.classList.toggle('btn-pausar-inactive', !pausado);
 }
 
 function atualizarGrafico(c, m) {
   const predicted = m.predicted || 0;
   const produced  = (m.produced != null && m.produced !== '') ? Number(m.produced) : 0;
   const ratio     = predicted > 0 ? (produced / predicted) * 100 : 0;
-  let color = 'rgba(255,255,255,0.3)', txt = 'text-gray-400';
-  if      (ratio < 50) { color='rgba(255,0,0,0.6)';   txt='text-red-500';    }
-  else if (ratio < 80) { color='rgba(255,255,0,0.6)'; txt='text-yellow-400'; }
-  else                 { color='rgba(0,255,0,0.6)';   txt='text-green-400';  }
+  let color = 'rgba(255,255,255,0.3)', perfClass = 'performance-default';
+  if      (ratio < 50) { color = 'rgba(255,0,0,0.6)';   perfClass = 'performance-low';  }
+  else if (ratio < 80) { color = 'rgba(255,255,0,0.6)'; perfClass = 'performance-mid';  }
+  else                 { color = 'rgba(0,255,0,0.6)';   perfClass = 'performance-good'; }
   c.chart.data.datasets[0].data            = [predicted, produced];
   c.chart.data.datasets[0].backgroundColor = ['rgba(0,200,0,0.4)', color];
   c.chart.update();
-  c.performanceEl.className   = `text-center text-sm font-semibold mt-1 ${txt}`;
+  c.performanceEl.className   = `card-performance ${perfClass}`;
   c.performanceEl.textContent = `Desempenho: ${ratio.toFixed(1)}%`;
 }
 
 function renderHistory(c, m) {
   c.historyEl.innerHTML = '';
   if (!m.history || m.history.length === 0) {
-    c.historyEl.innerHTML = '<div class="text-gray-400">Histórico vazio</div>'; return;
+    c.historyEl.innerHTML = '<div class="history-empty">Histórico vazio</div>';
+    return;
   }
   m.history.slice().reverse().forEach(h => {
     const div = document.createElement('div');
-    div.className = 'mb-1 border-b border-gray-800 pb-1';
+    div.className = 'history-entry';
     div.innerHTML = `
-      <div class="text-xs text-gray-300">${new Date(h.ts).toLocaleString()}</div>
-      <div class="text-sm">Operador: <strong>${h.operator}</strong> · Peça: <strong>${h.process}</strong></div>
-      <div class="text-xs text-gray-400">Previsto: ${h.predicted} · Realizado: ${h.produced??'-'} · Eficiência: ${h.efficiency??'-'}%</div>
-      <div class="text-xs mt-0.5 flex gap-2 flex-wrap">
-        <span class="status-time-chip chip-setup"    style="pointer-events:none">🟡 ${formatSeconds(h.statusAccSec?.setup||0)}</span>
+      <div class="history-date">${new Date(h.ts).toLocaleString()}</div>
+      <div class="history-main">Operador: <strong>${h.operator}</strong> · Peça: <strong>${h.process}</strong></div>
+      <div class="history-meta">Previsto: ${h.predicted} · Realizado: ${h.produced??'-'} · Eficiência: ${h.efficiency??'-'}%</div>
+      <div class="history-timers">
+        <span class="status-time-chip chip-setup" style="pointer-events:none">🟡 ${formatSeconds(h.statusAccSec?.setup||0)}</span>
         <span class="status-time-chip chip-manutencao" style="pointer-events:none">🔴 ${formatSeconds(h.statusAccSec?.manutencao||0)}</span>
         ${h.pausaAccSec ? `<span class="status-time-chip chip-setup" style="pointer-events:none">⏸ ${formatSeconds(h.pausaAccSec)}</span>` : ''}
       </div>
-      ${h.observacao ? `<div class='text-xs text-sky-300'>Obs.: ${h.observacao}</div>` : ''}`;
+      ${h.observacao ? `<div class="history-obs">Obs.: ${h.observacao}</div>` : ''}`;
     c.historyEl.appendChild(div);
   });
 }
@@ -305,107 +289,121 @@ function renderFuture(c, m) {
   c.futureList.innerHTML = '';
   if (!Array.isArray(m.future)) m.future = [];
   if (m.future.length === 0) {
-    c.futureList.innerHTML = '<div class="text-gray-400">Nenhum processo futuro</div>'; return;
+    c.futureList.innerHTML = '<div class="future-empty">Nenhum processo futuro</div>';
+    return;
   }
   m.future.forEach((f, i) => {
-    const div = document.createElement('div');
-    div.className = `rounded px-2 py-1 flex justify-between items-center cursor-move prioridade-${f.priority}`;
+    const div   = document.createElement('div');
+    div.className = `future-item prioridade-${f.priority}`;
+
     const badge = document.createElement('div');
-    badge.className = 'wait-badge'; badge.textContent = String(i+1);
+    badge.className   = 'wait-badge';
+    badge.textContent = String(i + 1);
+
     const left = document.createElement('div');
-    left.className = 'flex items-center gap-2 flex-1';
+    left.className = 'future-item-left';
+
     const inp = document.createElement('input');
-    inp.value = f.name;
-    inp.className = 'bg-transparent flex-1 mr-2 outline-none text-black font-bold';
+    inp.value     = f.name;
+    inp.className = 'future-item-input';
     inp.addEventListener('input', () => { f.name = inp.value; });
-    inp.addEventListener('blur',  () => { if (!Array.isArray(m.future)) m.future=[]; REF.child(m.id).set(m); });
+    inp.addEventListener('blur',  () => { if (!Array.isArray(m.future)) m.future = []; REF.child(m.id).set(m); });
+
     const sel = document.createElement('select');
-    sel.className = 'bg-gray-200 text-black text-sm rounded px-1 font-bold';
-    [['vermelho','🔴 Urgente'],['amarelo','🟡 Alta'],['verde','🟢 Normal']].forEach(([p,l]) => {
+    sel.className = 'future-item-select';
+    [['vermelho','🔴 Urgente'],['amarelo','🟡 Alta'],['verde','🟢 Normal']].forEach(([p, l]) => {
       const o = document.createElement('option');
-      o.value=p; o.textContent=l; if(p===f.priority) o.selected=true; sel.appendChild(o);
+      o.value = p; o.textContent = l;
+      if (p === f.priority) o.selected = true;
+      sel.appendChild(o);
     });
-    sel.addEventListener('change', () => { f.priority=sel.value; REF.child(m.id).set(m); renderFuture(c,m); });
+    sel.addEventListener('change', () => { f.priority = sel.value; REF.child(m.id).set(m); renderFuture(c, m); });
+
     const del = document.createElement('button');
-    del.className='ml-2 text-black font-bold'; del.textContent='✖';
-    del.addEventListener('click', () => { m.future.splice(i,1); REF.child(m.id).set(m); renderFuture(c,m); });
-    left.appendChild(badge); left.appendChild(inp);
-    div.appendChild(left); div.appendChild(sel); div.appendChild(del);
+    del.className   = 'future-item-delete';
+    del.textContent = '✖';
+    del.addEventListener('click', () => { m.future.splice(i, 1); REF.child(m.id).set(m); renderFuture(c, m); });
+
+    left.appendChild(badge);
+    left.appendChild(inp);
+    div.appendChild(left);
+    div.appendChild(sel);
+    div.appendChild(del);
     c.futureList.appendChild(div);
   });
-  Sortable.create(c.futureList, { animation:150, onEnd(e) {
-    const it = m.future.splice(e.oldIndex,1)[0];
-    m.future.splice(e.newIndex,0,it);
-    REF.child(m.id).set(m); renderFuture(c,m);
-  }});
+
+  Sortable.create(c.futureList, {
+    animation: 150,
+    onEnd(e) {
+      const it = m.future.splice(e.oldIndex, 1)[0];
+      m.future.splice(e.newIndex, 0, it);
+      REF.child(m.id).set(m);
+      renderFuture(c, m);
+    }
+  });
 }
 
-//  CRIAR CARD — chamado apenas UMA VEZ por máquina
-//  Depois disso só atualizamos os dados, nunca recriamos.
+
 function criarCard(m) {
   const tpl  = document.getElementById('machine-template');
   const node = tpl.content.cloneNode(true);
   const root = node.querySelector('div');
   document.getElementById('machinesContainer').appendChild(root);
 
-  // Guarda todas as referências DOM no objeto c
   const c = {
     root,
-    title:          root.querySelector('[data-role="title"]'),
-    subtitle:       root.querySelector('[data-role="subtitle"]'),
-    operatorInput:  root.querySelector('[data-role="operator"]'),
-    processInput:   root.querySelector('[data-role="process"]'),
-    cycleInput:     root.querySelector('[data-role="cycle"]'),
-    trocaInput:     root.querySelector('[data-role="troca"]'),
-    paradaDisplay:  root.querySelector('[data-role="paradaAutoDisplay"]'),
-    startInput:     root.querySelector('[data-role="startTime"]'),
-    endInput:       root.querySelector('[data-role="endTime"]'),
-    producedInput:  root.querySelector('[data-role="produced"]'),
-    observacaoInput:root.querySelector('[data-role="observacao"]'),
-    saveBtn:        root.querySelector('[data-role="save"]'),
-    addHistBtn:     root.querySelector('[data-role="addHistory"]'),
-    clearHistBtn:   root.querySelector('[data-role="clearHistory"]'),
-    predictedEl:    root.querySelector('[data-role="predicted"]'),
-    historyEl:      root.querySelector('[data-role="history"]'),
-    performanceEl:  root.querySelector('[data-role="performance"]'),
-    futureInput:    root.querySelector('[data-role="futureInput"]'),
-    addFutureBtn:   root.querySelector('[data-role="addFuture"]'),
-    futureList:     root.querySelector('[data-role="futureList"]'),
-    prioritySelect: root.querySelector('[data-role="prioritySelect"]'),
-    sortFutureBtn:  root.querySelector('[data-role="sortFuture"]'),
-    btnProducao:    root.querySelector('[data-role="btnProducao"]'),
-    btnSetup:       root.querySelector('[data-role="btnSetup"]'),
-    btnManutencao:  root.querySelector('[data-role="btnManutencao"]'),
-    btnPausar:      root.querySelector('[data-role="btnPausar"]'),
-    btnZerar:       root.querySelector('[data-role="btnZerar"]'),
-    elSetup:        root.querySelector('[data-role="timeSetup"]'),
-    elManut:        root.querySelector('[data-role="timeManutencao"]'),
-    statusBadge:    root.querySelector('[data-role="statusBadge"]'),
-    chart:          null,
-    timer:          null
+    title:           root.querySelector('[data-role="title"]'),
+    subtitle:        root.querySelector('[data-role="subtitle"]'),
+    operatorInput:   root.querySelector('[data-role="operator"]'),
+    processInput:    root.querySelector('[data-role="process"]'),
+    cycleInput:      root.querySelector('[data-role="cycle"]'),
+    trocaInput:      root.querySelector('[data-role="troca"]'),
+    paradaDisplay:   root.querySelector('[data-role="paradaAutoDisplay"]'),
+    startInput:      root.querySelector('[data-role="startTime"]'),
+    endInput:        root.querySelector('[data-role="endTime"]'),
+    producedInput:   root.querySelector('[data-role="produced"]'),
+    observacaoInput: root.querySelector('[data-role="observacao"]'),
+    saveBtn:         root.querySelector('[data-role="save"]'),
+    addHistBtn:      root.querySelector('[data-role="addHistory"]'),
+    clearHistBtn:    root.querySelector('[data-role="clearHistory"]'),
+    predictedEl:     root.querySelector('[data-role="predicted"]'),
+    historyEl:       root.querySelector('[data-role="history"]'),
+    performanceEl:   root.querySelector('[data-role="performance"]'),
+    futureInput:     root.querySelector('[data-role="futureInput"]'),
+    addFutureBtn:    root.querySelector('[data-role="addFuture"]'),
+    futureList:      root.querySelector('[data-role="futureList"]'),
+    prioritySelect:  root.querySelector('[data-role="prioritySelect"]'),
+    sortFutureBtn:   root.querySelector('[data-role="sortFuture"]'),
+    btnProducao:     root.querySelector('[data-role="btnProducao"]'),
+    btnSetup:        root.querySelector('[data-role="btnSetup"]'),
+    btnManutencao:   root.querySelector('[data-role="btnManutencao"]'),
+    btnPausar:       root.querySelector('[data-role="btnPausar"]'),
+    btnZerar:        root.querySelector('[data-role="btnZerar"]'),
+    elSetup:         root.querySelector('[data-role="timeSetup"]'),
+    elManut:         root.querySelector('[data-role="timeManutencao"]'),
+    statusBadge:     root.querySelector('[data-role="statusBadge"]'),
+    chart:           null,
+    timer:           null
   };
 
-  c.title.textContent     = m.id;
-  c.subtitle.textContent  = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
-  c.operatorInput.value   = m.operator;
-  c.processInput.value    = m.process;
-  c.cycleInput.value      = m.cycleMin != null ? formatMinutesToMMSS(m.cycleMin) : '';
-  c.trocaInput.value      = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : '';
-  c.startInput.value      = m.startTime;
-  c.endInput.value        = m.endTime;
-  c.producedInput.value   = m.produced != null ? m.produced : '';
-  c.observacaoInput.value = m.observacao || '';
+  c.title.textContent      = m.id;
+  c.subtitle.textContent   = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
+  c.operatorInput.value    = m.operator;
+  c.processInput.value     = m.process;
+  c.cycleInput.value       = m.cycleMin != null ? formatMinutesToMMSS(m.cycleMin) : '';
+  c.trocaInput.value       = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : '';
+  c.startInput.value       = m.startTime;
+  c.endInput.value         = m.endTime;
+  c.producedInput.value    = m.produced != null ? m.produced : '';
+  c.observacaoInput.value  = m.observacao || '';
   c.predictedEl.textContent = m.predicted ?? 0;
 
-  // Badge do banco de ciclos — injetado abaixo do campo Peça
   const bancoBadge = document.createElement('div');
   bancoBadge.style.display = 'none';
   c.processInput.parentNode.appendChild(bancoBadge);
   c.bancoBadge = bancoBadge;
 
-  // Ao sair do campo Peça: busca no banco e preenche se vazio
   c.processInput.addEventListener('blur', () => checarEPreencherCiclo(c, m.id));
-  // Ao carregar card com peça já preenchida: verifica após 800ms (banco ainda carregando)
   if (m.process) setTimeout(() => checarEPreencherCiclo(c, m.id), 800);
 
   applyStatusVisual(c, m);
@@ -415,30 +413,25 @@ function criarCard(m) {
     type: 'bar',
     data: {
       labels: ['Previsto','Realizado'],
-      datasets: [{ label: m.id, data: [m.predicted||0, m.produced||0],
-        backgroundColor: ['rgba(0,200,0,0.4)','rgba(255,255,255,0.2)'] }]
+      datasets: [{
+        label: m.id,
+        data: [m.predicted || 0, m.produced || 0],
+        backgroundColor: ['rgba(0,200,0,0.4)', 'rgba(255,255,255,0.2)']
+      }]
     },
-    options: { scales:{ y:{ beginAtZero:true } }, plugins:{ legend:{ display:false } } }
+    options: {
+      scales: { y: { beginAtZero: true } },
+      plugins: { legend: { display: false } }
+    }
   });
 
   atualizarGrafico(c, m);
   renderHistory(c, m);
   renderFuture(c, m);
 
-  // ── Verifica se o horário atual está dentro do turno diurno ───────
-  function turnoAtivo() {
-    const agora    = new Date();
-    const agoraMin = agora.getHours() * 60 + agora.getMinutes();
-    const [sh, sm] = (m.startTime || '07:00').split(':').map(Number);
-    const [eh, em] = (m.endTime   || '16:45').split(':').map(Number);
-    return agoraMin >= sh*60+sm && agoraMin < eh*60+em;
-  }
-
-  // ── Inicializa (ou reinicia) o timer do card ─────────────────────
   function iniciarTimer() {
     if (c.timer) clearInterval(c.timer);
     c.timer = setInterval(() => {
-      // Cronômetros de status contam SEMPRE, independente do turno
       const secSetup = getLiveStatusSec(m, 'setup');
       const secManut = getLiveStatusSec(m, 'manutencao');
       const secPausa = getLivePausaSec(m);
@@ -447,7 +440,6 @@ function criarCard(m) {
       c.elManut.textContent       = formatSeconds(secManut);
       c.paradaDisplay.textContent = formatSeconds(secSetup + secManut + secPausa);
 
-      // Previsto sempre calculado com base nos tempos do turno
       const novo = calcularPrevisto(m.cycleMin, m.trocaMin, m.startTime, m.endTime,
         { setup: secSetup, manutencao: secManut, pausa: secPausa });
 
@@ -461,7 +453,6 @@ function criarCard(m) {
 
   iniciarTimer();
 
-  
   function mudarStatus(novo) {
     if (m.status === novo && !m.statusPaused) return;
     const agora = serverNow();
@@ -479,7 +470,6 @@ function criarCard(m) {
     m.statusChangedAt = serverNow();
     applyStatusVisual(c, m);
     applyBtnPausar(c, m);
-    // Garante que o timer está rodando (pode ter sido interrompido)
     iniciarTimer();
     REF.child(m.id).update({
       status:          novo,
@@ -491,7 +481,7 @@ function criarCard(m) {
     });
   }
 
-  c.btnProducao.addEventListener('click', () => mudarStatus('producao'));
+  c.btnProducao.addEventListener('click',   () => mudarStatus('producao'));
   c.btnSetup.addEventListener('click',      () => mudarStatus('setup'));
   c.btnManutencao.addEventListener('click', () => mudarStatus('manutencao'));
 
@@ -505,7 +495,7 @@ function criarCard(m) {
       }
       m.statusPaused    = true;
       m.statusChangedAt = null;
-      m.pausaChangedAt  = serverNow(); // aproximação local
+      m.pausaChangedAt  = serverNow();
       applyStatusVisual(c, m);
       applyBtnPausar(c, m);
       REF.child(m.id).update({
@@ -521,7 +511,7 @@ function criarCard(m) {
       }
       m.statusPaused    = false;
       m.pausaChangedAt  = null;
-      m.statusChangedAt = serverNow(); // aproximação local
+      m.statusChangedAt = serverNow();
       applyStatusVisual(c, m);
       applyBtnPausar(c, m);
       REF.child(m.id).update({
@@ -540,12 +530,10 @@ function criarCard(m) {
     m.pausaChangedAt  = null;
     m.statusPaused    = false;
     m.statusChangedAt = serverNow();
-    // Atualiza display imediatamente
     c.elSetup.textContent       = '0:00';
     c.elManut.textContent       = '0:00';
     c.paradaDisplay.textContent = '0:00';
     applyBtnPausar(c, m);
-    // Reinicia o timer caso tenha sido destruído
     iniciarTimer();
     REF.child(m.id).update({
       statusAccSec:    { setup: 0, manutencao: 0 },
@@ -559,8 +547,8 @@ function criarCard(m) {
   c.saveBtn.addEventListener('click', () => {
     m.operator   = c.operatorInput.value.trim();
     m.process    = c.processInput.value.trim();
-    m.cycleMin   = c.cycleInput.value.trim() === '' ? null : parseTempoMinutos(c.cycleInput.value.trim());
-    m.trocaMin   = c.trocaInput.value.trim() === '' ? null : parseTempoMinutos(c.trocaInput.value.trim());
+    m.cycleMin   = c.cycleInput.value.trim()   === '' ? null : parseTempoMinutos(c.cycleInput.value.trim());
+    m.trocaMin   = c.trocaInput.value.trim()   === '' ? null : parseTempoMinutos(c.trocaInput.value.trim());
     m.observacao = c.observacaoInput.value;
     m.startTime  = c.startInput.value  || '07:00';
     m.endTime    = c.endInput.value    || '16:45';
@@ -568,7 +556,6 @@ function criarCard(m) {
     c.subtitle.textContent = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
     REF.child(m.id).set(m);
 
-    // ── Banco de ciclos: oferece salvar se houver peça + ciclo ─────
     if (m.process && m.cycleMin != null) {
       const chave     = cicloKey(m.id, m.process);
       const existente = ciclosDB[chave];
@@ -576,16 +563,15 @@ function criarCard(m) {
         || existente.cycleMin !== m.cycleMin
         || existente.trocaMin !== (m.trocaMin ?? null);
       if (diferente) {
-        const ct  = formatMinutesToMMSS(m.cycleMin);
-        const tt  = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : 'sem troca';
+        const ct   = formatMinutesToMMSS(m.cycleMin);
+        const tt   = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : 'sem troca';
         const acao = existente ? 'Atualizar' : 'Salvar';
-        if (confirm(acao + ' ciclo no banco?\n\nMáquina: ' + m.id + '\nPeça: ' + m.process + '\nCiclo: ' + ct + '  Troca: ' + tt)) {
+        if (confirm(`${acao} ciclo no banco?\n\nMáquina: ${m.id}\nPeça: ${m.process}\nCiclo: ${ct}  Troca: ${tt}`)) {
           salvarCicloNoBanco(m.id, m.process, m.cycleMin, m.trocaMin);
           exibirBancoBadge(c, { cycleMin: m.cycleMin, trocaMin: m.trocaMin }, 'auto');
         }
       }
     }
-    // ──────────────────────────────────────────────────────────────
   });
 
   c.addHistBtn.addEventListener('click', () => {
@@ -603,16 +589,20 @@ function criarCard(m) {
       ? ((producedVal / predicted) * 100).toFixed(1) : '-';
     if (!Array.isArray(m.history)) m.history = [];
     m.history.push({
-      ts: Date.now(),
-      operator: c.operatorInput.value.trim() || '-',
-      process:  c.processInput.value.trim()  || '-',
-      cycleMin: cycleVal, trocaMin: trocaVal,
-      startTime: startVal, endTime: endVal,
-      produced: producedVal, predicted, efficiency,
-      observacao: c.observacaoInput.value,
-      status: m.status,
+      ts:        Date.now(),
+      operator:  c.operatorInput.value.trim()   || '-',
+      process:   c.processInput.value.trim()    || '-',
+      cycleMin:  cycleVal,
+      trocaMin:  trocaVal,
+      startTime: startVal,
+      endTime:   endVal,
+      produced:  producedVal,
+      predicted,
+      efficiency,
+      observacao:   c.observacaoInput.value,
+      status:       m.status,
       statusAccSec: { setup: secSetup, manutencao: secManut },
-      pausaAccSec: secPausa
+      pausaAccSec:  secPausa
     });
     renderHistory(c, m);
     REF.child(m.id).set(m);
@@ -636,9 +626,9 @@ function criarCard(m) {
   });
 
   c.sortFutureBtn.addEventListener('click', () => {
-    const ordem = { vermelho:1, amarelo:2, verde:3 };
+    const ordem = { vermelho: 1, amarelo: 2, verde: 3 };
     if (!Array.isArray(m.future)) m.future = [];
-    m.future.sort((a,b) => ordem[a.priority]-ordem[b.priority]);
+    m.future.sort((a, b) => ordem[a.priority] - ordem[b.priority]);
     REF.child(m.id).set(m);
     renderFuture(c, m);
   });
@@ -646,25 +636,21 @@ function criarCard(m) {
   return c;
 }
 
-//  ATUALIZAR CARD EXISTENTE SEM RECRIAR
-//  Chamado quando o Firebase notifica uma mudança.
-//  Atualiza só o objeto m em memória — o setInterval
-//  já está rodando e exibe o valor correto no próximo tick.
 function atualizarCard(c, m, raw) {
-  const statusMudou   = m.status !== (raw.status || 'producao') ||
-                        m.statusPaused !== (raw.statusPaused || false);
-  const estruturaMudou = m.operator  !== (raw.operator  || '') ||
-                         m.process   !== (raw.process   || '') ||
-                         m.cycleMin  !== (raw.cycleMin  ?? null) ||
-                         m.trocaMin  !== (raw.trocaMin  ?? null) ||
-                         m.startTime !== (raw.startTime || '07:00') ||
-                         m.endTime   !== (raw.endTime   || '16:45') ||
-                         m.produced  !== (raw.produced  ?? null) ||
-                         m.observacao!== (raw.observacao?? '') ||
+  const statusMudou = m.status !== (raw.status || 'producao') ||
+                      m.statusPaused !== (raw.statusPaused || false);
+
+  const estruturaMudou = m.operator   !== (raw.operator   || '') ||
+                         m.process    !== (raw.process    || '') ||
+                         m.cycleMin   !== (raw.cycleMin   ?? null) ||
+                         m.trocaMin   !== (raw.trocaMin   ?? null) ||
+                         m.startTime  !== (raw.startTime  || '07:00') ||
+                         m.endTime    !== (raw.endTime    || '16:45') ||
+                         m.produced   !== (raw.produced   ?? null) ||
+                         m.observacao !== (raw.observacao ?? '') ||
                          JSON.stringify(m.history) !== JSON.stringify(raw.history || []) ||
                          JSON.stringify(m.future)  !== JSON.stringify(raw.future  || []);
 
-  // Sempre atualiza os campos de cronômetro no objeto em memória
   m.status          = raw.status          || 'producao';
   m.statusChangedAt = raw.statusChangedAt || null;
   m.statusPaused    = raw.statusPaused    || false;
@@ -675,13 +661,11 @@ function atualizarCard(c, m, raw) {
   m.pausaAccSec    = raw.pausaAccSec    || 0;
   m.pausaChangedAt = raw.pausaChangedAt || null;
 
-  // Atualiza visual de status e pausar sempre que mudar
   if (statusMudou) {
     applyStatusVisual(c, m);
     applyBtnPausar(c, m);
   }
 
-  // Atualiza campos estruturais se necessário
   if (estruturaMudou) {
     m.operator   = raw.operator   || '';
     m.process    = raw.process    || '';
@@ -694,23 +678,21 @@ function atualizarCard(c, m, raw) {
     m.history    = Array.isArray(raw.history) ? raw.history : [];
     m.future     = Array.isArray(raw.future)  ? raw.future  : [];
 
-    c.subtitle.textContent  = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
-    c.operatorInput.value   = m.operator;
-    c.processInput.value    = m.process;
-    c.cycleInput.value      = m.cycleMin != null ? formatMinutesToMMSS(m.cycleMin) : '';
-    c.trocaInput.value      = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : '';
-    c.startInput.value      = m.startTime;
-    c.endInput.value        = m.endTime;
-    c.producedInput.value   = m.produced != null ? m.produced : '';
-    c.observacaoInput.value = m.observacao;
+    c.subtitle.textContent   = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
+    c.operatorInput.value    = m.operator;
+    c.processInput.value     = m.process;
+    c.cycleInput.value       = m.cycleMin != null ? formatMinutesToMMSS(m.cycleMin) : '';
+    c.trocaInput.value       = m.trocaMin != null ? formatMinutesToMMSS(m.trocaMin) : '';
+    c.startInput.value       = m.startTime;
+    c.endInput.value         = m.endTime;
+    c.producedInput.value    = m.produced != null ? m.produced : '';
+    c.observacaoInput.value  = m.observacao;
     atualizarGrafico(c, m);
     renderHistory(c, m);
     renderFuture(c, m);
   }
 }
 
-let primeiraCarrega = true;
-let prevSnapshot    = {};
 
 REF.on('value', snapshot => {
   const data = snapshot.val();
@@ -726,7 +708,6 @@ REF.on('value', snapshot => {
     return;
   }
 
-  // Notificações
   if (!primeiraCarrega) {
     MACHINE_NAMES.forEach(name => {
       const raw  = data[name] || {};
@@ -736,12 +717,12 @@ REF.on('value', snapshot => {
       const prevHL = Array.isArray(prev.history) ? prev.history.length : 0;
       const currHL = Array.isArray(raw.history)  ? raw.history.length  : 0;
       if (currHL > prevHL) {
-        const u = raw.history[raw.history.length-1];
+        const u = raw.history[raw.history.length - 1];
         notificar(`📋 Histórico — ${name}`, `Realizado: ${u.produced??'-'} · Eficiência: ${u.efficiency??'-'}%`);
       }
       if (raw.status && raw.status !== prev.status) {
-        const labels = { producao:'🟢 Produção', setup:'🟡 Setup', manutencao:'🔴 Manutenção' };
-        notificar(name, `Status: ${labels[raw.status]||raw.status}`);
+        const labels = { producao: '🟢 Produção', setup: '🟡 Setup', manutencao: '🔴 Manutenção' };
+        notificar(name, `Status: ${labels[raw.status] || raw.status}`);
       }
     });
   }
@@ -749,16 +730,14 @@ REF.on('value', snapshot => {
   prevSnapshot = JSON.parse(JSON.stringify(data));
 
   if (primeiraCarrega) {
-    // Cria todos os cards uma única vez
     MACHINE_NAMES.forEach(name => {
-      const raw = data[name] || {};
-      const m   = rawToMachine(name, raw);
+      const raw  = data[name] || {};
+      const m    = rawToMachine(name, raw);
       machines[name] = m;
       cards[name]    = criarCard(m);
     });
     primeiraCarrega = false;
   } else {
-    // Atualiza só o state e os visuais afetados — sem recriar cards
     MACHINE_NAMES.forEach(name => {
       const raw = data[name];
       if (!raw) return;
@@ -769,50 +748,33 @@ REF.on('value', snapshot => {
     });
   }
 
-  // Reaplica filtro de pesquisa se houver
   const si = document.getElementById('searchInput');
   if (si && si.value) filtrarCards(si.value);
 });
 
-function exportCSV() {
-  const hoje   = new Date();
-  const dataArq = hoje.toLocaleDateString('pt-BR').replace(/\//g,'-');
 
-  // Cabeçalho reorganizado: identificação → tempos de turno → resultados → paradas → obs
+function exportCSV() {
+  const hoje    = new Date();
+  const dataArq = hoje.toLocaleDateString('pt-BR').replace(/\//g, '-');
+
   const cabecalho = [
-    'Data',
-    'Hora do Registro',
-    'Máquina',
-    'Operador',
-    'Peça / Processo',
-    'Turno Início',
-    'Turno Fim',
-    'Ciclo (mm:ss)',
-    'Troca (mm:ss)',
-    'Previsto (pçs)',
-    'Realizado (pçs)',
-    'Eficiência (%)',
-    'T. Setup (h:mm:ss)',
-    'T. Manutenção (h:mm:ss)',
-    'T. Pausa (h:mm:ss)',
-    'Status ao Registrar',
-    'Observação'
+    'Data','Hora do Registro','Máquina','Operador','Peça / Processo',
+    'Turno Início','Turno Fim','Ciclo (mm:ss)','Troca (mm:ss)',
+    'Previsto (pçs)','Realizado (pçs)','Eficiência (%)',
+    'T. Setup (h:mm:ss)','T. Manutenção (h:mm:ss)','T. Pausa (h:mm:ss)',
+    'Status ao Registrar','Observação'
   ].join(';');
 
-  const linhas = [cabecalho];
-
-  const statusLabel = { producao: 'Produção', setup: 'Setup', manutencao: 'Manutenção' };
+  const linhas       = [cabecalho];
+  const statusLabel  = { producao: 'Produção', setup: 'Setup', manutencao: 'Manutenção' };
 
   MACHINE_NAMES.forEach(name => {
     const m = machines[name];
     if (!m || !Array.isArray(m.history) || m.history.length === 0) return;
-
     m.history.forEach(h => {
-      const d   = new Date(h.ts);
-      const ef  = (h.efficiency != null && h.efficiency !== '-')
-        ? h.efficiency.toString().replace('.', ',')
-        : '';
-
+      const d  = new Date(h.ts);
+      const ef = (h.efficiency != null && h.efficiency !== '-')
+        ? h.efficiency.toString().replace('.', ',') : '';
       linhas.push([
         d.toLocaleDateString('pt-BR'),
         d.toLocaleTimeString('pt-BR'),
@@ -840,41 +802,33 @@ function exportCSV() {
     return;
   }
 
-  baixarCSV('\uFEFF' + linhas.join('\n'), `historico_producao_${dataArq}.csv`);
-}
-
-// Remove ponto-e-vírgula de campos de texto para não quebrar o CSV
-function limpar(str) { return String(str).replace(/;/g, ','); }
-
-function baixarCSV(content, filename) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([content], { type:'text/csv;charset=utf-8;' }));
-  a.download = filename; a.click();
+  a.href  = URL.createObjectURL(new Blob(['\uFEFF' + linhas.join('\n')], { type: 'text/csv;charset=utf-8;' }));
+  a.download = `historico_producao_${dataArq}.csv`;
+  a.click();
 }
 
 function resetAll() {
   if (!confirm('Resetar tudo e apagar dados?')) return;
-  MACHINE_NAMES.forEach(name => {
-    REF.child(name).set(machineDefault(name));
-  });
+  MACHINE_NAMES.forEach(name => REF.child(name).set(machineDefault(name)));
 }
 
 function filtrarCards(termo) {
   const q = termo.trim().toLowerCase();
   let visiveis = 0;
-  MACHINE_NAMES.forEach((name, i) => {
+  MACHINE_NAMES.forEach(name => {
     const c = cards[name];
     const m = machines[name];
     if (!c || !m) return;
     const campos = [m.id, m.operator, m.process,
-      ...(Array.isArray(m.future) ? m.future.map(f=>f.name) : [])
+      ...(Array.isArray(m.future) ? m.future.map(f => f.name) : [])
     ].join(' ').toLowerCase();
     const vis = !q || campos.includes(q);
     c.root.style.display = vis ? '' : 'none';
     if (vis) visiveis++;
   });
   const countEl = document.getElementById('searchCount');
-  if (q) { countEl.textContent=`${visiveis} resultado${visiveis!==1?'s':''}`; countEl.classList.remove('hidden'); }
+  if (q) { countEl.textContent = `${visiveis} resultado${visiveis !== 1 ? 's' : ''}`; countEl.classList.remove('hidden'); }
   else   { countEl.classList.add('hidden'); }
 }
 
