@@ -240,6 +240,32 @@ function applyStatusVisual(c, m) {
   if (c[map[m.status]]) c[map[m.status]].classList.add('active-chip');
 }
 
+// Badge somente-leitura com dados vindos do gateway Homiservi (MES Bridge),
+// gravados em m.auto.<linha>.shifts.<dia|noite>.producedAuto / m.auto.<linha>.running.
+// Nunca escreve de volta no Firebase e nunca altera operator/process/produced.
+// Este dashboard não tem conceito de turno na UI, então soma dia+noite.
+function renderAutoBadge(c, auto) {
+  if (!c.autoBadge) return;
+  if (!auto) { c.autoBadge.classList.add('hidden'); return; }
+
+  const stale  = !auto.lastSeenAt || (serverNow() - auto.lastSeenAt) > 90000;
+  const online = !!auto.online && !stale;
+
+  const partes = [];
+  ['p1', 'p2'].forEach(linha => {
+    if (!auto[linha]) return;
+    const shifts   = auto[linha].shifts || {};
+    const produced = (shifts.dia?.producedAuto || 0) + (shifts.noite?.producedAuto || 0);
+    const rotulo   = linha === 'p1' ? 'P1' : 'P2';
+    const estado   = online ? (auto[linha].running ? ' · rodando' : ' · parada') : '';
+    partes.push(`${rotulo}: ${produced} pçs${estado}`);
+  });
+
+  c.autoBadge.classList.remove('hidden');
+  c.autoDot.className = 'auto-dot ' + (!online ? 'auto-dot-offline' : ((auto.p1?.running || auto.p2?.running) ? 'auto-dot-running' : 'auto-dot-online'));
+  c.autoText.textContent = 'Automático — ' + (partes.length ? partes.join(' · ') : (online ? 'sem eventos ainda' : 'offline'));
+}
+
 function applyBtnPausar(c, m) {
   const pausado = m.statusPaused || m.pausaChangedAt !== null;
   c.btnPausar.textContent = pausado ? '▶ Retomar' : '⏸ Pausar';
@@ -382,6 +408,9 @@ function criarCard(m) {
     elSetup:         root.querySelector('[data-role="timeSetup"]'),
     elManut:         root.querySelector('[data-role="timeManutencao"]'),
     statusBadge:     root.querySelector('[data-role="statusBadge"]'),
+    autoBadge:       root.querySelector('[data-role="autoBadge"]'),
+    autoDot:         root.querySelector('[data-role="autoDot"]'),
+    autoText:        root.querySelector('[data-role="autoText"]'),
     chart:           null,
     timer:           null
   };
@@ -408,6 +437,7 @@ function criarCard(m) {
 
   applyStatusVisual(c, m);
   applyBtnPausar(c, m);
+  renderAutoBadge(c, m.auto);
 
   c.chart = new Chart(root.querySelector('[data-role="chart"]').getContext('2d'), {
     type: 'bar',
@@ -448,6 +478,8 @@ function criarCard(m) {
         c.predictedEl.textContent = novo;
         atualizarGrafico(c, m);
       }
+
+      renderAutoBadge(c, m.auto);
     }, 1000);
   }
 
@@ -637,6 +669,9 @@ function criarCard(m) {
 }
 
 function atualizarCard(c, m, raw) {
+  m.auto = raw.auto || null;
+  renderAutoBadge(c, m.auto);
+
   const statusMudou = m.status !== (raw.status || 'producao') ||
                       m.statusPaused !== (raw.statusPaused || false);
 
@@ -733,6 +768,7 @@ REF.on('value', snapshot => {
     MACHINE_NAMES.forEach(name => {
       const raw  = data[name] || {};
       const m    = rawToMachine(name, raw);
+      m.auto     = raw.auto || null;
       machines[name] = m;
       cards[name]    = criarCard(m);
     });
