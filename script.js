@@ -240,30 +240,77 @@ function applyStatusVisual(c, m) {
   if (c[map[m.status]]) c[map[m.status]].classList.add('active-chip');
 }
 
-// Badge somente-leitura com dados vindos do gateway Homiservi (MES Bridge),
-// gravados em m.auto.<linha>.shifts.<dia|noite>.producedAuto / m.auto.<linha>.running.
-// Nunca escreve de volta no Firebase e nunca altera operator/process/produced.
-// Este dashboard não tem conceito de turno na UI, então soma dia+noite.
+// Faixa de status em destaque com o estado vindo do gateway Homiservi
+// (MES Bridge), gravado em m.auto.<linha>.running / .totalPulses. Só leitura
+// visual — nunca escreve de volta no Firebase e nunca mexe nos botões
+// manuais de Produção/Setup/Manutenção.
 function renderAutoBadge(c, auto) {
   if (!c.autoBadge) return;
-  if (!auto) { c.autoBadge.classList.add('hidden'); return; }
+  if (!auto || !(auto.p1 || auto.p2)) { c.autoBadge.classList.add('hidden'); return; }
 
-  const stale  = !auto.lastSeenAt || (serverNow() - auto.lastSeenAt) > 90000;
-  const online = !!auto.online && !stale;
+  const stale   = !auto.lastSeenAt || (serverNow() - auto.lastSeenAt) > 90000;
+  const online  = !!auto.online && !stale;
+  const rodando = online && !!(auto.p1?.running || auto.p2?.running);
 
-  const partes = [];
+  c.autoBadge.classList.remove('hidden', 'auto-status-running', 'auto-status-stopped', 'auto-status-offline');
+  c.autoBadge.classList.add(!online ? 'auto-status-offline' : (rodando ? 'auto-status-running' : 'auto-status-stopped'));
+  c.autoText.textContent = !online
+    ? '⚪ Sensor offline'
+    : (rodando ? '🟢 Máquina rodando (automático)' : '🔴 Máquina parada (automático)');
+}
+
+// Soma as peças contadas pelo sensor desde o "marco zero" (autoBaseline),
+// gravado quando o operador clica "Zerar" ao trocar de peça — assim o
+// número representa a peça atual, não o total acumulado do gateway.
+function computeAutoProduced(m) {
+  if (!m.auto || !(m.auto.p1 || m.auto.p2)) return null;
+  const baseline = m.autoBaseline || {};
+  let total = 0;
   ['p1', 'p2'].forEach(linha => {
-    if (!auto[linha]) return;
-    const shifts   = auto[linha].shifts || {};
-    const produced = (shifts.dia?.producedAuto || 0) + (shifts.noite?.producedAuto || 0);
-    const rotulo   = linha === 'p1' ? 'P1' : 'P2';
-    const estado   = online ? (auto[linha].running ? ' · rodando' : ' · parada') : '';
-    partes.push(`${rotulo}: ${produced} pçs${estado}`);
+    if (!m.auto[linha]) return;
+    const atual = m.auto[linha].totalPulses || 0;
+    const marco = baseline[linha] ?? atual;
+    total += Math.max(0, atual - marco);
   });
+  return total;
+}
 
-  c.autoBadge.classList.remove('hidden');
-  c.autoDot.className = 'auto-dot ' + (!online ? 'auto-dot-offline' : ((auto.p1?.running || auto.p2?.running) ? 'auto-dot-running' : 'auto-dot-online'));
-  c.autoText.textContent = 'Automático — ' + (partes.length ? partes.join(' · ') : (online ? 'sem eventos ainda' : 'offline'));
+// Na primeira vez que uma máquina recebe dados do gateway, define o marco
+// zero como o valor atual (senão a "peça atual" começaria mostrando todo o
+// histórico acumulado do sensor desde que o gateway ligou).
+function garantirAutoBaseline(m) {
+  if (!m.auto || m._baselineInitDone) return;
+  const baseline = m.autoBaseline || {};
+  const updates = {};
+  ['p1', 'p2'].forEach(linha => {
+    if (m.auto[linha] && baseline[linha] == null) updates[linha] = m.auto[linha].totalPulses || 0;
+  });
+  if (Object.keys(updates).length) {
+    m.autoBaseline = { ...baseline, ...updates };
+    REF.child(m.id).child('autoBaseline').update(updates);
+  }
+  m._baselineInitDone = true;
+}
+
+// Preenche "Peças realizadas" com a contagem automática, ao vivo — mas só
+// quando o operador não está editando o campo, pra não atrapalhar quem
+// estiver corrigindo o número na mão (ex: descartar peça com defeito).
+function syncAutoProduced(c, m) {
+  if (!m.auto || !(m.auto.p1 || m.auto.p2)) {
+    if (c.producedAutoTag) c.producedAutoTag.classList.add('hidden');
+    return;
+  }
+  garantirAutoBaseline(m);
+  if (c.producedAutoTag) c.producedAutoTag.classList.remove('hidden');
+
+  if (c._autoOverridden) return; // operador corrigiu na mão — só volta a seguir o sensor no próximo "Zerar"
+
+  const auto = computeAutoProduced(m);
+  if (auto == null) return;
+  if (document.activeElement !== c.producedInput && String(auto) !== c.producedInput.value) {
+    c.producedInput.value = auto;
+  }
+  atualizarGrafico(c, m, auto);
 }
 
 function applyBtnPausar(c, m) {
@@ -273,9 +320,11 @@ function applyBtnPausar(c, m) {
   c.btnPausar.classList.toggle('btn-pausar-inactive', !pausado);
 }
 
-function atualizarGrafico(c, m) {
+function atualizarGrafico(c, m, producedOverride) {
   const predicted = m.predicted || 0;
-  const produced  = (m.produced != null && m.produced !== '') ? Number(m.produced) : 0;
+  const produced  = producedOverride != null
+    ? producedOverride
+    : ((m.produced != null && m.produced !== '') ? Number(m.produced) : 0);
   const ratio     = predicted > 0 ? (produced / predicted) * 100 : 0;
   let color = 'rgba(255,255,255,0.3)', perfClass = 'performance-default';
   if      (ratio < 50) { color = 'rgba(255,0,0,0.6)';   perfClass = 'performance-low';  }
@@ -388,6 +437,7 @@ function criarCard(m) {
     startInput:      root.querySelector('[data-role="startTime"]'),
     endInput:        root.querySelector('[data-role="endTime"]'),
     producedInput:   root.querySelector('[data-role="produced"]'),
+    producedAutoTag: root.querySelector('[data-role="producedAutoTag"]'),
     observacaoInput: root.querySelector('[data-role="observacao"]'),
     saveBtn:         root.querySelector('[data-role="save"]'),
     addHistBtn:      root.querySelector('[data-role="addHistory"]'),
@@ -409,7 +459,6 @@ function criarCard(m) {
     elManut:         root.querySelector('[data-role="timeManutencao"]'),
     statusBadge:     root.querySelector('[data-role="statusBadge"]'),
     autoBadge:       root.querySelector('[data-role="autoBadge"]'),
-    autoDot:         root.querySelector('[data-role="autoDot"]'),
     autoText:        root.querySelector('[data-role="autoText"]'),
     chart:           null,
     timer:           null
@@ -431,6 +480,8 @@ function criarCard(m) {
   bancoBadge.style.display = 'none';
   c.processInput.parentNode.appendChild(bancoBadge);
   c.bancoBadge = bancoBadge;
+
+  c.producedInput.addEventListener('input', () => { if (m.auto) c._autoOverridden = true; });
 
   c.processInput.addEventListener('blur', () => checarEPreencherCiclo(c, m.id));
   if (m.process) setTimeout(() => checarEPreencherCiclo(c, m.id), 800);
@@ -458,6 +509,7 @@ function criarCard(m) {
   atualizarGrafico(c, m);
   renderHistory(c, m);
   renderFuture(c, m);
+  syncAutoProduced(c, m);
 
   function iniciarTimer() {
     if (c.timer) clearInterval(c.timer);
@@ -480,6 +532,7 @@ function criarCard(m) {
       }
 
       renderAutoBadge(c, m.auto);
+      syncAutoProduced(c, m);
     }, 1000);
   }
 
@@ -567,13 +620,28 @@ function criarCard(m) {
     c.paradaDisplay.textContent = '0:00';
     applyBtnPausar(c, m);
     iniciarTimer();
-    REF.child(m.id).update({
+
+    const updates = {
       statusAccSec:    { setup: 0, manutencao: 0 },
       pausaAccSec:     0,
       pausaChangedAt:  null,
       statusPaused:    false,
       statusChangedAt: firebase.database.ServerValue.TIMESTAMP
-    });
+    };
+
+    // Se a máquina tem gateway, "Zerar" também marca o zero da contagem
+    // automática — a partir de agora, "Peças realizadas" volta a contar do 0.
+    if (m.auto && (m.auto.p1 || m.auto.p2)) {
+      const baseline = {};
+      if (m.auto.p1) baseline.p1 = m.auto.p1.totalPulses || 0;
+      if (m.auto.p2) baseline.p2 = m.auto.p2.totalPulses || 0;
+      m.autoBaseline = baseline;
+      updates.autoBaseline = baseline;
+      c._autoOverridden = false;
+      syncAutoProduced(c, m);
+    }
+
+    REF.child(m.id).update(updates);
   });
 
   c.saveBtn.addEventListener('click', () => {
@@ -669,7 +737,8 @@ function criarCard(m) {
 }
 
 function atualizarCard(c, m, raw) {
-  m.auto = raw.auto || null;
+  m.auto         = raw.auto || null;
+  m.autoBaseline = raw.autoBaseline || null;
   renderAutoBadge(c, m.auto);
 
   const statusMudou = m.status !== (raw.status || 'producao') ||
@@ -726,6 +795,8 @@ function atualizarCard(c, m, raw) {
     renderHistory(c, m);
     renderFuture(c, m);
   }
+
+  syncAutoProduced(c, m);
 }
 
 
@@ -768,7 +839,8 @@ REF.on('value', snapshot => {
     MACHINE_NAMES.forEach(name => {
       const raw  = data[name] || {};
       const m    = rawToMachine(name, raw);
-      m.auto     = raw.auto || null;
+      m.auto         = raw.auto || null;
+      m.autoBaseline = raw.autoBaseline || null;
       machines[name] = m;
       cards[name]    = criarCard(m);
     });

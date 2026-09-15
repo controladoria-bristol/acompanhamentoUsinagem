@@ -56,15 +56,16 @@
         <div class="card-title" data-role="title">Máquina</div>
         <div class="card-subtitle" data-role="subtitle">Operador: - · Ciclo: - · Peça: -</div>
         <span data-role="statusBadge" class="status-badge status-badge-producao">🟢 Produção</span>
-        <div data-role="autoBadge" class="auto-badge hidden">
-          <span data-role="autoDot" class="auto-dot"></span>
-          <span data-role="autoText">Automático</span>
-        </div>
       </div>
       <div class="card-predicted-wrapper">
         <div class="card-predicted-label">Previsto</div>
         <div class="card-predicted-value" data-role="predicted">0</div>
       </div>
+    </div>
+
+    <div data-role="autoBadge" class="auto-badge hidden">
+      <span data-role="autoDot" class="auto-dot"></span>
+      <span data-role="autoText">Automático</span>
     </div>
 
     <div class="card-controls">
@@ -120,7 +121,10 @@
       </div>
 
       <div class="field-half">
-        <label class="field-label">Peças realizadas</label>
+        <label class="field-label">
+          Peças realizadas
+          <span data-role="producedAutoTag" class="produced-auto-tag hidden">automático</span>
+        </label>
         <input data-role="produced" placeholder="0" type="number" min="0" class="field-input" />
       </div>
 

@@ -436,32 +436,65 @@ select:focus,
 .status-badge-setup      { background: #a16207; color: #fff; }
 .status-badge-manutencao { background: #b91c1c; color: #fff; }
 
-/* Badge de leitura automática vinda do gateway Homiservi (MES Bridge) */
+/* Faixa de status em destaque, vinda do gateway Homiservi (MES Bridge) */
 .auto-badge {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  background: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
-  font-size: 0.65rem;
-  font-weight: 700;
+  gap: 8px;
+  margin: 10px 20px 0;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 800;
   letter-spacing: 0.02em;
-  margin-top: 4px;
 }
 
-.auto-dot {
-  width: 6px;
-  height: 6px;
+.auto-badge .auto-dot {
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   flex-shrink: 0;
   background: currentColor;
 }
 
-.auto-dot-running { color: #4ade80; }
-.auto-dot-online  { color: #38bdf8; }
-.auto-dot-offline { color: #9ca3af; }
+.auto-status-running {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+
+.auto-status-running .auto-dot {
+  animation: auto-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.auto-status-stopped {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+
+.auto-status-offline {
+  background: rgba(156, 163, 175, 0.15);
+  color: #9ca3af;
+}
+
+@keyframes auto-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+/* Etiqueta "automático" no rótulo de Peças realizadas, quando a máquina tem gateway */
+.produced-auto-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: rgba(56, 189, 248, 0.18);
+  color: #38bdf8;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+}
 
 .status-time-chip {
   display: inline-flex;
