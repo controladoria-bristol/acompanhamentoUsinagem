@@ -18,6 +18,10 @@ firebase.initializeApp({
 const db        = firebase.database();
 const REF       = db.ref('usinagem_dashboard_v18_6');
 const CICLOS_REF = db.ref('usinagem_ciclos_banco');
+// Livro-razão do histórico: cada registro entra com push() e nunca é
+// sobrescrito nem apagado pelo painel ("Limpar"/"Resetar" não mexem aqui).
+// O Apps Script da planilha de controle lê daqui e acrescenta as linhas.
+const LOG_REF    = db.ref('usinagem_historico_log');
 
 let ciclosDB = {};
 CICLOS_REF.on('value', snap => { ciclosDB = snap.val() || {}; });
@@ -688,8 +692,8 @@ function criarCard(m) {
     const efficiency  = (predicted > 0 && producedVal != null)
       ? ((producedVal / predicted) * 100).toFixed(1) : '-';
     if (!Array.isArray(m.history)) m.history = [];
-    m.history.push({
-      ts:        Date.now(),
+    const registro = {
+      ts:        serverNow(),
       operator:  c.operatorInput.value.trim()   || '-',
       process:   c.processInput.value.trim()    || '-',
       cycleMin:  cycleVal,
@@ -703,9 +707,12 @@ function criarCard(m) {
       status:       m.status,
       statusAccSec: { setup: secSetup, manutencao: secManut },
       pausaAccSec:  secPausa
-    });
+    };
+    m.history.push(registro);
     renderHistory(c, m);
     REF.child(m.id).set(m);
+    LOG_REF.push({ ...registro, machineId: m.id, createdAt: firebase.database.ServerValue.TIMESTAMP })
+      .catch(err => console.error('Falha ao gravar no log do histórico:', err));
   });
 
   c.clearHistBtn.addEventListener('click', () => {
