@@ -6,6 +6,7 @@
  * registros dos últimos dias e acrescenta os que ainda não foram enviados
  * (uma linha por registro, mesmas colunas do CSV) na aba do turno: noite se
  * o Turno Início for das 18:00 às 06:59, dia se for das 07:00 às 17:59.
+ * Registro excluído no painel (lixeira 🗑️) tem a linha apagada daqui.
  *
  * INSTALAÇÃO (uma vez só):
  *   1. Na planilha: Extensões → Apps Script.
@@ -58,11 +59,12 @@ function sincronizarHistorico() {
     if (!abas.dia)   throw new Error('Aba "' + ABA_DIA   + '" não encontrada. Ajuste ABA_DIA no script.');
     if (!abas.noite) throw new Error('Aba "' + ABA_NOITE + '" não encontrada. Ajuste ABA_NOITE no script.');
 
+    // Aba de controle: coluna A = ID enviado, coluna B = "excluído" quando a
+    // linha já foi apagada da planilha.
     const controle   = obterAbaControle(ss);
-    const jaEnviados = new Set(
-      controle.getRange(1, 1, Math.max(controle.getLastRow(), 1), 1).getValues()
-        .map(l => l[0]).filter(String)
-    );
+    const jaEnviados = new Map();
+    controle.getRange(1, 1, Math.max(controle.getLastRow(), 1), 2).getValues()
+      .forEach((l, i) => { if (l[0]) jaEnviados.set(l[0], { linha: i + 1, excluido: l[1] === 'excluído' }); });
 
     const inicio = prefixoPushId(Date.now() - DIAS_RETROATIVOS * 86400000);
     const url = FIREBASE_URL + '/' + LOG_PATH + '.json'
@@ -73,18 +75,32 @@ function sincronizarHistorico() {
       throw new Error('Firebase respondeu ' + resp.getResponseCode() + ': ' + resp.getContentText());
 
     const dados = JSON.parse(resp.getContentText()) || {};
-    const novos = Object.keys(dados).sort().filter(id => !jaEnviados.has(id));
+    const ids   = Object.keys(dados).sort();
+
+    // Excluídos no painel depois de enviados: apaga a linha da aba do turno.
+    ids.forEach(id => {
+      const enviado = jaEnviados.get(id);
+      if (!enviado || enviado.excluido || !dados[id].excluido) return;
+      removerLinha(abas[turnoDoRegistro(dados[id])], dados[id]);
+      controle.getRange(enviado.linha, 2).setValue('excluído');
+    });
+
+    // Novos: envia os que não foram excluídos; os excluídos antes de enviar
+    // só entram na aba de controle, para não serem enviados depois.
+    const novos = ids.filter(id => !jaEnviados.has(id));
     if (novos.length === 0) return;
 
     const linhasPorTurno = { dia: [], noite: [] };
-    novos.forEach(id => linhasPorTurno[turnoDoRegistro(dados[id])].push(montarLinha(dados[id])));
+    novos.filter(id => !dados[id].excluido)
+      .forEach(id => linhasPorTurno[turnoDoRegistro(dados[id])].push(montarLinha(dados[id])));
     Object.keys(linhasPorTurno).forEach(turno => {
       const linhas = linhasPorTurno[turno];
       if (linhas.length === 0) return;
       const aba = abas[turno];
       aba.getRange(aba.getLastRow() + 1, 1, linhas.length, linhas[0].length).setValues(linhas);
     });
-    controle.getRange(controle.getLastRow() + 1, 1, novos.length, 1).setValues(novos.map(id => [id]));
+    controle.getRange(controle.getLastRow() + 1, 1, novos.length, 2)
+      .setValues(novos.map(id => [id, dados[id].excluido ? 'excluído' : '']));
   } finally {
     lock.releaseLock();
   }
@@ -96,6 +112,25 @@ function turnoDoRegistro(h) {
     ? Number(String(h.startTime).split(':')[0])
     : Number(Utilities.formatDate(new Date(h.ts || h.createdAt), TZ, 'H'));
   return (hora >= NOITE_A_PARTIR_DE || hora < NOITE_ATE) ? 'noite' : 'dia';
+}
+
+// Procura a linha pela Data + Hora do Registro + Máquina (de baixo pra cima)
+// e apaga. Compara o texto exibido, ignorando zeros à esquerda (07:05 = 7:05).
+function removerLinha(aba, h) {
+  const ultima = aba.getLastRow();
+  if (ultima < 1) return false;
+  const d     = new Date(h.ts || h.createdAt);
+  const norm  = s => String(s).trim().split(/[\/:]/).map(p => String(Number(p))).join('|');
+  const data  = norm(Utilities.formatDate(d, TZ, 'dd/MM/yyyy'));
+  const hora  = norm(Utilities.formatDate(d, TZ, 'HH:mm:ss'));
+  const valores = aba.getRange(1, 1, ultima, 3).getDisplayValues();
+  for (let i = valores.length - 1; i >= 0; i--) {
+    if (norm(valores[i][0]) === data && norm(valores[i][1]) === hora && valores[i][2] === h.machineId) {
+      aba.deleteRow(i + 1);
+      return true;
+    }
+  }
+  return false; // já tinha sido apagada à mão
 }
 
 // Mesmas colunas e formatos do "Exportar CSV" do painel.

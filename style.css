@@ -275,6 +275,23 @@ select:focus,
   padding-bottom: 4px;
 }
 
+.history-entry-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.history-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 2px;
+  opacity: 0.6;
+}
+
+.history-delete:hover { opacity: 1; }
+
 .history-date  { font-size: 0.75rem; color: #d1d5db; }
 .history-main  { font-size: 0.85rem; }
 .history-meta  { font-size: 0.75rem; color: #9ca3af; }

@@ -164,6 +164,7 @@ function rawToMachine(name, raw) {
     startTime:       raw.startTime  || '07:00',
     endTime:         raw.endTime    || '16:45',
     produced:        raw.produced   ?? null,
+    producedManual:  raw.producedManual || false,
     predicted:       raw.predicted  ?? 0,
     history:         Array.isArray(raw.history) ? raw.history : [],
     future:          Array.isArray(raw.future)  ? raw.future  : [],
@@ -317,6 +318,44 @@ function syncAutoProduced(c, m) {
   atualizarGrafico(c, m, auto);
 }
 
+// Um registro de histórico com os tempos ao vivo da máquina. `v` traz os
+// campos do formulário (clique em "Histórico") ou os já salvos em `m`
+// (registro automático do fim de turno).
+function montarRegistro(m, v) {
+  const secSetup  = getLiveStatusSec(m, 'setup');
+  const secManut  = getLiveStatusSec(m, 'manutencao');
+  const secPausa  = getLivePausaSec(m);
+  const predicted = calcularPrevisto(v.cycleMin, v.trocaMin, v.startTime, v.endTime,
+    { setup: secSetup, manutencao: secManut, pausa: secPausa });
+  const efficiency = (predicted > 0 && v.produced != null)
+    ? ((v.produced / predicted) * 100).toFixed(1) : '-';
+  return {
+    ts:        serverNow(),
+    operator:  v.operator || '-',
+    process:   v.process  || '-',
+    cycleMin:  v.cycleMin,
+    trocaMin:  v.trocaMin,
+    startTime: v.startTime,
+    endTime:   v.endTime,
+    produced:  v.produced,
+    predicted,
+    efficiency,
+    observacao:   v.observacao || '',
+    status:       m.status,
+    statusAccSec: { setup: secSetup, manutencao: secManut },
+    pausaAccSec:  secPausa
+  };
+}
+
+// Grava no log e devolve o ID gerado (guardado no registro do card para
+// permitir excluir depois).
+function gravarNoLog(machineId, registro) {
+  const novo = LOG_REF.push();
+  novo.set({ ...registro, machineId, createdAt: firebase.database.ServerValue.TIMESTAMP })
+    .catch(err => console.error('Falha ao gravar no log do histórico:', err));
+  return novo.key;
+}
+
 function applyBtnPausar(c, m) {
   const pausado = m.statusPaused || m.pausaChangedAt !== null;
   c.btnPausar.textContent = pausado ? '▶ Retomar' : '⏸ Pausar';
@@ -351,7 +390,10 @@ function renderHistory(c, m) {
     const div = document.createElement('div');
     div.className = 'history-entry';
     div.innerHTML = `
-      <div class="history-date">${new Date(h.ts).toLocaleString()}</div>
+      <div class="history-entry-top">
+        <div class="history-date">${new Date(h.ts).toLocaleString()}</div>
+        <button class="history-delete" title="Excluir registro">🗑️</button>
+      </div>
       <div class="history-main">Operador: <strong>${h.operator}</strong> · Peça: <strong>${h.process}</strong></div>
       <div class="history-meta">Previsto: ${h.predicted} · Realizado: ${h.produced??'-'} · Eficiência: ${h.efficiency??'-'}%</div>
       <div class="history-timers">
@@ -360,8 +402,20 @@ function renderHistory(c, m) {
         ${h.pausaAccSec ? `<span class="status-time-chip chip-setup" style="pointer-events:none">⏸ ${formatSeconds(h.pausaAccSec)}</span>` : ''}
       </div>
       ${h.observacao ? `<div class="history-obs">Obs.: ${h.observacao}</div>` : ''}`;
+    div.querySelector('.history-delete').addEventListener('click', () => excluirRegistro(c, m, h));
     c.historyEl.appendChild(div);
   });
+}
+
+// Tira o registro do card e marca como excluído no log; o Apps Script da
+// planilha apaga a linha (ou deixa de enviar, se ainda não tinha ido).
+function excluirRegistro(c, m, h) {
+  const quando = new Date(h.ts).toLocaleString();
+  if (!confirm(`Excluir o registro de ${m.id}?\n\n${quando} · Realizado: ${h.produced ?? '-'}\n\nSe já foi para a planilha, a linha também será apagada lá.`)) return;
+  m.history = m.history.filter(x => x !== h);
+  renderHistory(c, m);
+  REF.child(m.id).update({ history: m.history.length ? m.history : null });
+  if (h.logId) LOG_REF.child(h.logId).update({ excluido: true, excluidoEm: firebase.database.ServerValue.TIMESTAMP });
 }
 
 function renderFuture(c, m) {
@@ -485,7 +539,26 @@ function criarCard(m) {
   c.processInput.parentNode.appendChild(bancoBadge);
   c.bancoBadge = bancoBadge;
 
-  c.producedInput.addEventListener('input', () => { if (m.auto) c._autoOverridden = true; });
+  // "Peças realizadas" é salvo sozinho logo depois de digitado, para o
+  // fechamento de turno (que pode rodar em outro PC) enxergar o número.
+  // Em máquina com sensor, producedManual marca que o valor foi corrigido
+  // na mão e deve prevalecer sobre a contagem automática.
+  function lerProduced() {
+    const v = c.producedInput.value.trim();
+    return v === '' ? null : Number(v);
+  }
+  function salvarProduced() {
+    m.produced       = lerProduced();
+    m.producedManual = !!(m.auto && c._autoOverridden);
+    REF.child(m.id).update({ produced: m.produced, producedManual: m.producedManual || null });
+  }
+  c._autoOverridden = !!m.producedManual;
+  let salvarProducedTimer = null;
+  c.producedInput.addEventListener('input', () => {
+    if (m.auto) c._autoOverridden = true;
+    clearTimeout(salvarProducedTimer);
+    salvarProducedTimer = setTimeout(salvarProduced, 800);
+  });
 
   c.processInput.addEventListener('blur', () => checarEPreencherCiclo(c, m.id));
   if (m.process) setTimeout(() => checarEPreencherCiclo(c, m.id), 800);
@@ -640,7 +713,9 @@ function criarCard(m) {
       if (m.auto.p1) baseline.p1 = m.auto.p1.totalPulses || 0;
       if (m.auto.p2) baseline.p2 = m.auto.p2.totalPulses || 0;
       m.autoBaseline = baseline;
-      updates.autoBaseline = baseline;
+      updates.autoBaseline   = baseline;
+      updates.producedManual = null;
+      m.producedManual  = false;
       c._autoOverridden = false;
       syncAutoProduced(c, m);
     }
@@ -656,7 +731,8 @@ function criarCard(m) {
     m.observacao = c.observacaoInput.value;
     m.startTime  = c.startInput.value  || '07:00';
     m.endTime    = c.endInput.value    || '16:45';
-    m.produced   = c.producedInput.value.trim() === '' ? null : Number(c.producedInput.value.trim());
+    m.produced   = lerProduced();
+    m.producedManual = !!(m.auto && c._autoOverridden);
     c.subtitle.textContent = `Operador: ${m.operator||'-'} · Ciclo: ${m.cycleMin!=null?formatMinutesToMMSS(m.cycleMin):'-'} · Peça: ${m.process||'-'}`;
     REF.child(m.id).set(m);
 
@@ -679,40 +755,23 @@ function criarCard(m) {
   });
 
   c.addHistBtn.addEventListener('click', () => {
-    const cycleVal    = parseTempoMinutos(c.cycleInput.value.trim());
-    const trocaVal    = parseTempoMinutos(c.trocaInput.value.trim());
-    const startVal    = c.startInput.value  || '07:00';
-    const endVal      = c.endInput.value    || '16:45';
-    const producedVal = c.producedInput.value.trim() === '' ? null : Number(c.producedInput.value.trim());
-    const secSetup    = getLiveStatusSec(m, 'setup');
-    const secManut    = getLiveStatusSec(m, 'manutencao');
-    const secPausa    = getLivePausaSec(m);
-    const predicted   = calcularPrevisto(cycleVal, trocaVal, startVal, endVal,
-      { setup: secSetup, manutencao: secManut, pausa: secPausa });
-    const efficiency  = (predicted > 0 && producedVal != null)
-      ? ((producedVal / predicted) * 100).toFixed(1) : '-';
+    const registro = montarRegistro(m, {
+      operator:   c.operatorInput.value.trim(),
+      process:    c.processInput.value.trim(),
+      cycleMin:   parseTempoMinutos(c.cycleInput.value.trim()),
+      trocaMin:   parseTempoMinutos(c.trocaInput.value.trim()),
+      startTime:  c.startInput.value || '07:00',
+      endTime:    c.endInput.value   || '16:45',
+      produced:   lerProduced(),
+      observacao: c.observacaoInput.value
+    });
+    m.produced       = registro.produced;
+    m.producedManual = !!(m.auto && c._autoOverridden);
+    registro.logId = gravarNoLog(m.id, registro);
     if (!Array.isArray(m.history)) m.history = [];
-    const registro = {
-      ts:        serverNow(),
-      operator:  c.operatorInput.value.trim()   || '-',
-      process:   c.processInput.value.trim()    || '-',
-      cycleMin:  cycleVal,
-      trocaMin:  trocaVal,
-      startTime: startVal,
-      endTime:   endVal,
-      produced:  producedVal,
-      predicted,
-      efficiency,
-      observacao:   c.observacaoInput.value,
-      status:       m.status,
-      statusAccSec: { setup: secSetup, manutencao: secManut },
-      pausaAccSec:  secPausa
-    };
     m.history.push(registro);
     renderHistory(c, m);
     REF.child(m.id).set(m);
-    LOG_REF.push({ ...registro, machineId: m.id, createdAt: firebase.database.ServerValue.TIMESTAMP })
-      .catch(err => console.error('Falha ao gravar no log do histórico:', err));
   });
 
   c.clearHistBtn.addEventListener('click', () => {
@@ -744,8 +803,13 @@ function criarCard(m) {
 }
 
 function atualizarCard(c, m, raw) {
-  m.auto         = raw.auto || null;
-  m.autoBaseline = raw.autoBaseline || null;
+  const novoBaseline = raw.autoBaseline || null;
+  // Marco zero mudou em outro painel ("Zerar" ou virada de turno): volta a seguir o sensor.
+  if (JSON.stringify(m.autoBaseline || null) !== JSON.stringify(novoBaseline)) c._autoOverridden = false;
+  m.auto           = raw.auto || null;
+  m.autoBaseline   = novoBaseline;
+  m.producedManual = raw.producedManual || false;
+  if (m.producedManual) c._autoOverridden = true; // corrigido na mão em outro PC
   renderAutoBadge(c, m.auto);
 
   const statusMudou = m.status !== (raw.status || 'producao') ||
@@ -927,6 +991,89 @@ function resetAll() {
   if (!confirm('Resetar tudo e apagar dados?')) return;
   MACHINE_NAMES.forEach(name => REF.child(name).set(machineDefault(name)));
 }
+
+// Virada de turno: às 07:30 e às 18:00 o primeiro painel aberto que perceber
+// a virada (a transação em TURNO_REF garante que só um faz) registra sozinho
+// as máquinas com peças realizadas e sem registro no turno — direto no log,
+// que vai para a planilha — e limpa o histórico do card e "Peças realizadas".
+const VIRADAS_TURNO = [[7, 30], [18, 0]];
+const TURNO_REF     = db.ref('usinagem_turno_virada');
+let viradaVerificada = null;
+
+function ultimaVirada(ms) {
+  const d = new Date(ms);
+  let ultima = null;
+  [0, -1].forEach(dia => VIRADAS_TURNO.forEach(([h, min]) => {
+    const v = new Date(d.getFullYear(), d.getMonth(), d.getDate() + dia, h, min).getTime();
+    if (v <= ms && (ultima == null || v > ultima)) ultima = v;
+  }));
+  return ultima;
+}
+
+function verificarViradaTurno() {
+  if (primeiraCarrega) return;
+  const virada = ultimaVirada(serverNow());
+  if (virada === viradaVerificada) return;
+  viradaVerificada = virada;
+
+  let executar = false;
+  TURNO_REF.transaction(atual => {
+    executar = false;
+    if (atual == null) return virada; // primeira vez: só marca a virada atual, sem limpar
+    if (atual >= virada) return;      // outro painel já fez
+    executar = true;
+    return virada;
+  }, (err, committed) => {
+    if (err) { console.error('Falha na virada de turno:', err); viradaVerificada = null; return; }
+    if (committed && executar) fecharTurno(ultimaVirada(virada - 1));
+  });
+}
+
+function fecharTurno(inicioTurno) {
+  MACHINE_NAMES.forEach(name => {
+    const m = machines[name];
+    const c = cards[name];
+    if (!m || !c) return;
+
+    // Valor que está no campo "Peças realizadas" (salvo sozinho ao digitar),
+    // ou a contagem do sensor se ninguém corrigiu na mão.
+    const temSensor = !!(m.auto && (m.auto.p1 || m.auto.p2));
+    const produced  = (temSensor && !m.producedManual) ? computeAutoProduced(m) : m.produced;
+    // Este mesmo número já foi para o histórico neste turno?
+    const jaEnviado = (m.history || []).some(h => h.ts >= inicioTurno && h.produced === produced);
+    if (produced > 0 && !jaEnviado) {
+      gravarNoLog(name, montarRegistro(m, {
+        operator:   m.operator,
+        process:    m.process,
+        cycleMin:   m.cycleMin,
+        trocaMin:   m.trocaMin,
+        startTime:  m.startTime,
+        endTime:    m.endTime,
+        produced,
+        observacao: (m.observacao ? m.observacao + ' · ' : '') + 'registro automático (fim de turno)'
+      }));
+    }
+
+    const updates = { history: null, produced: null, producedManual: null };
+    if (temSensor) {
+      const baseline = {};
+      if (m.auto.p1) baseline.p1 = m.auto.p1.totalPulses || 0;
+      if (m.auto.p2) baseline.p2 = m.auto.p2.totalPulses || 0;
+      m.autoBaseline = baseline;
+      updates.autoBaseline = baseline;
+    }
+    m.history        = [];
+    m.produced       = null;
+    m.producedManual = false;
+    c._autoOverridden     = false;
+    c.producedInput.value = '';
+    renderHistory(c, m);
+    atualizarGrafico(c, m);
+    REF.child(name).update(updates);
+  });
+}
+
+setInterval(verificarViradaTurno, 30000);
 
 function filtrarCards(termo) {
   const q = termo.trim().toLowerCase();
