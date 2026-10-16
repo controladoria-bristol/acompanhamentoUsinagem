@@ -755,6 +755,7 @@ function criarCard(m) {
   });
 
   c.addHistBtn.addEventListener('click', () => {
+    if (c.addHistBtn.disabled) return;
     const registro = montarRegistro(m, {
       operator:   c.operatorInput.value.trim(),
       process:    c.processInput.value.trim(),
@@ -765,6 +766,16 @@ function criarCard(m) {
       produced:   lerProduced(),
       observacao: c.observacaoInput.value
     });
+
+    // Evita registro repetido por clique duplo ou por clicar de novo achando
+    // que não foi: trava o botão por 3 s e pergunta se já há um igual recente.
+    const ultimo = (m.history || [])[(m.history || []).length - 1];
+    const segundos = ultimo ? Math.round((registro.ts - ultimo.ts) / 1000) : Infinity;
+    if (segundos < 120 && ultimo.produced === registro.produced && ultimo.process === registro.process &&
+        !confirm(`${m.id} já tem um registro igual feito há ${segundos} segundos.\n\nRegistrar de novo?`)) return;
+    c.addHistBtn.disabled = true;
+    setTimeout(() => { c.addHistBtn.disabled = false; }, 3000);
+
     m.produced       = registro.produced;
     m.producedManual = !!(m.auto && c._autoOverridden);
     registro.logId = gravarNoLog(m.id, registro);
